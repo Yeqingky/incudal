@@ -69,6 +69,7 @@ export async function findUserByUsernameOrEmail(identifier: string): Promise<Use
       ban_reason: userByUsername.banReason,
       avatar_style: userByUsername.avatarStyle,
       avatar_badge_id: userByUsername.avatarBadgeId,
+      avatar_url: userByUsername.avatarUrl ?? null,
       has_created_host_before: userByUsername.hasCreatedHostBefore,
       created_at: userByUsername.createdAt.toISOString(),
       updated_at: userByUsername.updatedAt.toISOString()
@@ -102,6 +103,7 @@ export async function findUserByUsernameOrEmail(identifier: string): Promise<Use
     ban_reason: userByEmail.banReason,
     avatar_style: userByEmail.avatarStyle,
     avatar_badge_id: userByEmail.avatarBadgeId,
+    avatar_url: userByEmail.avatarUrl ?? null,
     has_created_host_before: userByEmail.hasCreatedHostBefore,
     created_at: userByEmail.createdAt.toISOString(),
     updated_at: userByEmail.updatedAt.toISOString()
@@ -128,6 +130,7 @@ export async function findUserById(id: number): Promise<User | null> {
     ban_reason: user.banReason,
     avatar_style: user.avatarStyle,
     avatar_badge_id: user.avatarBadgeId,
+    avatar_url: user.avatarUrl ?? null,
     has_created_host_before: user.hasCreatedHostBefore,
     created_at: user.createdAt.toISOString(),
     updated_at: user.updatedAt.toISOString()
@@ -161,6 +164,7 @@ export async function findUserByEmail(email: string): Promise<User | null> {
     ban_reason: user.banReason,
     avatar_style: user.avatarStyle,
     avatar_badge_id: user.avatarBadgeId,
+    avatar_url: user.avatarUrl ?? null,
     has_created_host_before: user.hasCreatedHostBefore,
     created_at: user.createdAt.toISOString(),
     updated_at: user.updatedAt.toISOString()
@@ -601,6 +605,7 @@ export async function updateUser(id: number, data: {
   status?: 'active' | 'banned'
   passwordHash?: string
   avatarStyle?: string
+  avatarUrl?: string | null
 }): Promise<void> {
   const updateData: {
     email?: string
@@ -608,6 +613,7 @@ export async function updateUser(id: number, data: {
     status?: 'active' | 'banned'
     passwordHash?: string
     avatarStyle?: string
+    avatarUrl?: string | null
   } = {}
 
   if (data.email !== undefined) updateData.email = data.email
@@ -615,6 +621,7 @@ export async function updateUser(id: number, data: {
   if (data.status !== undefined) updateData.status = data.status
   if (data.passwordHash !== undefined) updateData.passwordHash = data.passwordHash
   if (data.avatarStyle !== undefined) updateData.avatarStyle = data.avatarStyle
+  if (data.avatarUrl !== undefined) updateData.avatarUrl = data.avatarUrl
 
   if (Object.keys(updateData).length === 0) return
 

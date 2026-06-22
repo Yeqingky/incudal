@@ -1,22 +1,34 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import api from '@/api'
 import { useAuthStore } from '@/stores/auth'
+import { useBadgeStore } from '@/stores/badges'
 import { useThemeStore } from '@/stores/theme'
 import { useToast } from '@/stores/toast'
 import UserAvatar from '@/components/UserAvatar.vue'
+import BadgeImage from '@/components/BadgeImage.vue'
 import ChangeEmailModal from '@/components/profile/ChangeEmailModal.vue'
 import type { User } from '@/types/api'
 
 const { t } = useI18n()
 const authStore = useAuthStore()
+const badgeStore = useBadgeStore()
 const themeStore = useThemeStore()
 const toast = useToast()
 const userDetails = ref<User | null>(null)
 const loading = ref<boolean>(true)
 
-// 头像风格相关 - 所有可用风格
+const AVATAR_URL_PATTERN = /^https:\/\/cdn\.nodeimage\.com\/i\/.+\.(jpeg|jpg|png|webp)$/i
+
+// 头像模式: 'badge' = 勋章, 'style' = DiceBear 风格, 'customUrl' = 自定义图片
+const avatarMode = ref<'badge' | 'style' | 'customUrl'>(
+  authStore.user?.avatarBadgeId ? 'badge'
+    : authStore.user?.avatarUrl ? 'customUrl'
+    : 'style'
+)
+
+// DiceBear 风格相关
 const avatarStyles = [
   'adventurer', 'adventurerNeutral', 'avataaars', 'avataaarsNeutral',
   'bigEars', 'bigEarsNeutral', 'bigSmile', 'bottts', 'botttsNeutral',
@@ -31,7 +43,21 @@ const savingAvatar = ref(false)
 const avatarExpanded = ref(false)
 const showChangeEmailModal = ref(false)
 
-// 获取风格的国际化名称
+// 自定义头像 URL 相关
+const customAvatarUrl = ref<string>(authStore.user?.avatarUrl || '')
+const savingAvatarUrl = ref(false)
+
+const appliedBadge = computed(() => {
+  if (!authStore.user?.avatarBadgeId) return null
+  return badgeStore.getBadge(authStore.user.avatarBadgeId)
+})
+
+onMounted(() => {
+  if (authStore.user?.avatarBadgeId) {
+    badgeStore.ensureBadge(authStore.user.avatarBadgeId)
+  }
+})
+
 function getStyleLabel(style: string): string {
   return t(`profile.avatar.styles.${style}`)
 }
@@ -40,12 +66,20 @@ const hasAvatarChanged = computed(() => {
   return selectedAvatarStyle.value !== authStore.user?.avatarStyle
 })
 
+const isUrlValid = computed(() => {
+  if (!customAvatarUrl.value) return false
+  return AVATAR_URL_PATTERN.test(customAvatarUrl.value)
+})
+
+const hasUrlChanged = computed(() => {
+  return customAvatarUrl.value !== (authStore.user?.avatarUrl || '')
+})
+
 async function saveAvatarStyle(): Promise<void> {
   if (!hasAvatarChanged.value) return
   savingAvatar.value = true
   try {
     await api.users.update(authStore.user!.id, { avatarStyle: selectedAvatarStyle.value })
-    // 更新本地 store
     if (authStore.user) {
       authStore.user.avatarStyle = selectedAvatarStyle.value
     }
@@ -56,6 +90,50 @@ async function saveAvatarStyle(): Promise<void> {
   } finally {
     savingAvatar.value = false
   }
+}
+
+async function saveCustomAvatarUrl(): Promise<void> {
+  if (!hasUrlChanged.value || !customAvatarUrl.value) return
+  if (!AVATAR_URL_PATTERN.test(customAvatarUrl.value)) return
+  savingAvatarUrl.value = true
+  try {
+    const url = customAvatarUrl.value
+    await api.users.update(authStore.user!.id, { avatarUrl: url })
+    if (authStore.user) {
+      authStore.user.avatarUrl = url
+    }
+    toast.success(t('profile.avatar.urlSaveSuccess'))
+  } catch (error) {
+    console.error('Failed to save avatar URL:', error)
+    toast.error(t('profile.avatar.urlSaveFailed'))
+  } finally {
+    savingAvatarUrl.value = false
+  }
+}
+
+async function clearCustomAvatarUrl(): Promise<void> {
+  savingAvatarUrl.value = true
+  try {
+    await api.users.update(authStore.user!.id, { avatarUrl: null })
+    if (authStore.user) {
+      authStore.user.avatarUrl = null
+    }
+    customAvatarUrl.value = ''
+    avatarMode.value = 'badge'
+    toast.success(t('profile.avatar.urlCleared'))
+  } catch (error) {
+    console.error('Failed to clear avatar URL:', error)
+    toast.error(t('profile.avatar.urlSaveFailed'))
+  } finally {
+    savingAvatarUrl.value = false
+  }
+}
+
+function switchToMode(mode: 'badge' | 'style' | 'customUrl'): void {
+  if (mode === 'customUrl') {
+    customAvatarUrl.value = authStore.user?.avatarUrl || ''
+  }
+  avatarMode.value = mode
 }
 
 async function loadUserDetails(): Promise<void> {
@@ -79,8 +157,6 @@ function handleEmailUpdated(email: string): void {
   showChangeEmailModal.value = false
 }
 
-
-// 挂载时加载
 loadUserDetails()
 
 defineExpose({ loadUserDetails })
@@ -154,53 +230,179 @@ defineExpose({ loadUserDetails })
           v-show="avatarExpanded"
           class="mt-4 pt-4 border-t border-themed"
         >
-          <div class="flex flex-col sm:flex-row items-start gap-6 mb-4">
-            <!-- 预览 -->
-            <div class="flex-shrink-0 flex flex-col items-center gap-2">
-              <UserAvatar 
-                :username="authStore.user?.username || ''"
-                :email="authStore.user?.email" 
-                :avatar-style="selectedAvatarStyle"
-                :prefer-badge="false"
-                :size="96"
-              />
-              <span class="text-sm text-themed-secondary">{{ getStyleLabel(selectedAvatarStyle) }}</span>
-            </div>
-            <!-- 风格选择 -->
-            <div class="flex-1 w-full">
-              <div class="grid grid-cols-5 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 gap-2">
-                <button
-                  v-for="style in avatarStyles"
-                  :key="style"
-                  class="flex flex-col items-center gap-1 p-1.5 rounded-lg border-2 transition-all"
-                  :class="[
-                    selectedAvatarStyle === style 
-                      ? 'border-blue-500 bg-blue-500/10' 
-                      : 'border-transparent hover:border-gray-300 dark:hover:border-gray-600'
-                  ]"
-                  :title="getStyleLabel(style)"
-                  @click="selectedAvatarStyle = style"
-                >
-                  <UserAvatar 
-                    :username="authStore.user?.username || ''"
-                    :email="authStore.user?.email" 
-                    :avatar-style="style"
-                    :prefer-badge="false"
-                    :size="32"
-                  />
-                </button>
-              </div>
-            </div>
-          </div>
-          <div class="flex justify-end">
+          <!-- 模式切换 Tab -->
+          <div class="flex gap-1 mb-4 p-0.5 rounded-lg bg-gray-100 dark:bg-gray-800 w-fit">
             <button
-              class="btn btn-primary text-sm"
-              :disabled="!hasAvatarChanged || savingAvatar"
-              @click="saveAvatarStyle"
+              class="px-3 py-1.5 text-sm rounded-md transition-all"
+              :class="avatarMode === 'badge'
+                ? 'bg-white dark:bg-gray-700 text-themed font-medium shadow-sm'
+                : 'text-themed-muted hover:text-themed'"
+              @click="switchToMode('badge')"
             >
-              {{ savingAvatar ? $t('common.saving') : $t('common.save') }}
+              🏅 {{ $t('profile.avatar.tabBadge') }}
+            </button>
+            <button
+              class="px-3 py-1.5 text-sm rounded-md transition-all"
+              :class="avatarMode === 'style'
+                ? 'bg-white dark:bg-gray-700 text-themed font-medium shadow-sm'
+                : 'text-themed-muted hover:text-themed'"
+              @click="switchToMode('style')"
+            >
+              🎨 {{ $t('profile.avatar.tabStyle') }}
+            </button>
+            <button
+              class="px-3 py-1.5 text-sm rounded-md transition-all"
+              :class="avatarMode === 'customUrl'
+                ? 'bg-white dark:bg-gray-700 text-themed font-medium shadow-sm'
+                : 'text-themed-muted hover:text-themed'"
+              @click="switchToMode('customUrl')"
+            >
+              🖼️ {{ $t('profile.avatar.tabCustomUrl') }}
             </button>
           </div>
+
+          <!-- 勋章模式 -->
+          <template v-if="avatarMode === 'badge'">
+            <div class="flex flex-col sm:flex-row items-start gap-6 mb-4">
+              <div class="flex-shrink-0 flex flex-col items-center gap-2">
+                <template v-if="authStore.user?.avatarBadgeId">
+                  <BadgeImage
+                    :badge-id="authStore.user.avatarBadgeId"
+                    :size="96"
+                    variant="avatar"
+                  />
+                  <span v-if="appliedBadge" class="text-sm text-themed-secondary text-center">
+                    {{ appliedBadge.name }}
+                  </span>
+                </template>
+                <template v-else>
+                  <div class="w-24 h-24 rounded-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center text-themed-muted text-xs text-center px-2">
+                    {{ $t('profile.avatar.noBadge') }}
+                  </div>
+                </template>
+              </div>
+              <div class="flex-1 text-sm text-themed-secondary leading-relaxed">
+                <p v-if="authStore.user?.avatarBadgeId" class="mb-2">
+                  {{ $t('profile.avatar.badgeApplied') }}
+                </p>
+                <p v-else class="mb-2">
+                  {{ $t('profile.avatar.badgeNotApplied') }}
+                </p>
+                <router-link to="/entertainment" class="text-blue-500 hover:text-blue-600">
+                  {{ $t('profile.avatar.manageBadges') }}
+                </router-link>
+              </div>
+            </div>
+          </template>
+
+          <!-- DiceBear 风格模式 -->
+          <template v-if="avatarMode === 'style'">
+            <div class="flex flex-col sm:flex-row items-start gap-6 mb-4">
+              <div class="flex-shrink-0 flex flex-col items-center gap-2">
+                <UserAvatar 
+                  :username="authStore.user?.username || ''"
+                  :email="authStore.user?.email" 
+                  :avatar-style="selectedAvatarStyle"
+                  :prefer-badge="false"
+                  :prefer-custom-url="false"
+                  :size="96"
+                />
+                <span class="text-sm text-themed-secondary">{{ getStyleLabel(selectedAvatarStyle) }}</span>
+              </div>
+              <div class="flex-1 w-full">
+                <div class="grid grid-cols-5 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 gap-2">
+                  <button
+                    v-for="style in avatarStyles"
+                    :key="style"
+                    class="flex flex-col items-center gap-1 p-1.5 rounded-lg border-2 transition-all"
+                    :class="[
+                      selectedAvatarStyle === style 
+                        ? 'border-blue-500 bg-blue-500/10' 
+                        : 'border-transparent hover:border-gray-300 dark:hover:border-gray-600'
+                    ]"
+                    :title="getStyleLabel(style)"
+                    @click="selectedAvatarStyle = style"
+                  >
+                    <UserAvatar 
+                      :username="authStore.user?.username || ''"
+                      :email="authStore.user?.email" 
+                      :avatar-style="style"
+                      :prefer-badge="false"
+                      :prefer-custom-url="false"
+                      :size="32"
+                    />
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div class="flex justify-end">
+              <button
+                class="btn btn-primary text-sm"
+                :disabled="!hasAvatarChanged || savingAvatar"
+                @click="saveAvatarStyle"
+              >
+                {{ savingAvatar ? $t('common.saving') : $t('common.save') }}
+              </button>
+            </div>
+          </template>
+
+          <!-- 自定义图片模式 -->
+          <template v-if="avatarMode === 'customUrl'">
+            <div class="flex flex-col sm:flex-row items-start gap-6 mb-4">
+              <div class="flex-shrink-0 flex flex-col items-center gap-2">
+                <UserAvatar
+                  :username="authStore.user?.username || ''"
+                  :email="authStore.user?.email"
+                  :avatar-url="customAvatarUrl || null"
+                  :prefer-badge="false"
+                  :size="96"
+                />
+                <span v-if="authStore.user?.avatarUrl" class="text-xs text-themed-muted">
+                  {{ $t('profile.avatar.currentCustom') }}
+                </span>
+              </div>
+              <div class="flex-1 w-full space-y-3">
+                <div>
+                  <label class="block text-sm text-themed-secondary mb-1">
+                    {{ $t('profile.avatar.urlLabel') }}
+                  </label>
+                  <input
+                    v-model="customAvatarUrl"
+                    type="url"
+                    class="input w-full text-sm"
+                    :class="customAvatarUrl && !isUrlValid ? 'border-red-500' : ''"
+                    placeholder="https://cdn.nodeimage.com/i/example.jpeg"
+                  />
+                  <div v-if="customAvatarUrl && !isUrlValid" class="mt-1 text-xs text-red-500">
+                    {{ $t('profile.avatar.urlInvalid') }}
+                  </div>
+                  <div v-if="isUrlValid" class="mt-1 text-xs text-green-500">
+                    {{ $t('profile.avatar.urlValid') }}
+                  </div>
+                </div>
+                <div class="text-xs text-themed-muted leading-relaxed">
+                  {{ $t('profile.avatar.urlHint') }}
+                </div>
+                <div class="flex items-center gap-2">
+                  <button
+                    class="btn btn-primary text-sm"
+                    :disabled="!hasUrlChanged || !isUrlValid || savingAvatarUrl"
+                    @click="saveCustomAvatarUrl"
+                  >
+                    {{ savingAvatarUrl ? $t('common.saving') : $t('common.save') }}
+                  </button>
+                  <button
+                    v-if="authStore.user?.avatarUrl"
+                    class="btn-secondary btn-sm text-sm"
+                    :disabled="savingAvatarUrl"
+                    @click="clearCustomAvatarUrl"
+                  >
+                    {{ $t('profile.avatar.clearUrl') }}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </template>
         </div>
       </div>
     </dl>

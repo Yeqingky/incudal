@@ -24,6 +24,7 @@ export interface LoginResponse {
     role: 'admin' | 'user'
     avatarStyle?: string
     avatarBadgeId?: string | null
+    avatarUrl?: string | null
     hasCreatedHostBefore?: boolean
     canAccessHostingFeature?: boolean
   }
@@ -47,6 +48,7 @@ export interface RegisterResponse {
     role: 'admin' | 'user'
     avatarStyle?: string
     avatarBadgeId?: string | null
+    avatarUrl?: string | null
     hasCreatedHostBefore?: boolean
     canAccessHostingFeature?: boolean
   }
@@ -156,6 +158,7 @@ export interface User {
   status: 'active' | 'banned'
   avatarStyle?: string
   avatarBadgeId?: string | null
+  avatarUrl?: string | null
   hasCreatedHostBefore?: boolean
   canAccessHostingFeature?: boolean
   twoFAEnabled?: boolean
@@ -187,6 +190,7 @@ export interface UpdateUserRequest {
   role?: 'admin' | 'user'
   status?: 'active' | 'banned'
   avatarStyle?: string
+  avatarUrl?: string | null
   password?: string
   currentPassword?: string  // 修改密码时需要提供当前密码
   emailCode?: string

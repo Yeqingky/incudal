@@ -326,6 +326,7 @@ export default async function userRoutes(fastify: FastifyInstance) {
         status: user.status,
         avatarStyle: user.avatar_style,
         avatarBadgeId: user.avatar_badge_id ?? null,
+        avatarUrl: user.avatar_url ?? null,
         quota: quota ? {
           // 新配额系统
           hostLimit: quota.host_limit,
@@ -425,9 +426,11 @@ export default async function userRoutes(fastify: FastifyInstance) {
   })
 
   // 更新用户信息
+  const AVATAR_URL_PATTERN = /^https:\/\/cdn\.nodeimage\.com\/i\/.+\.(jpeg|jpg|png|webp)$/i
+
   fastify.patch<{
     Params: { id: string }
-    Body: UpdateUserRequest & { password?: string; currentPassword?: string; avatarStyle?: string; emailCode?: string }
+    Body: UpdateUserRequest & { password?: string; currentPassword?: string; avatarStyle?: string; avatarUrl?: string | null; emailCode?: string }
   }>('/:id', {
     onRequest: [fastify.authenticate],
     schema: {
@@ -447,13 +450,19 @@ export default async function userRoutes(fastify: FastifyInstance) {
               'notionists', 'notionistsNeutral', 'openPeeps', 'personas', 'pixelArt',
               'pixelArtNeutral', 'rings', 'shapes', 'thumbs'
             ]
+          },
+          avatarUrl: {
+            oneOf: [
+              { type: 'string', pattern: '^https://cdn\\.nodeimage\\.com/i/.+\\.(jpeg|jpg|png|webp)$' },
+              { type: 'null' }
+            ]
           }
         }
       }
     }
   }, async (request: FastifyRequest<{
     Params: { id: string }
-    Body: UpdateUserRequest & { password?: string; currentPassword?: string; avatarStyle?: string; emailCode?: string }
+    Body: UpdateUserRequest & { password?: string; currentPassword?: string; avatarStyle?: string; avatarUrl?: string | null; emailCode?: string }
   }>, reply: FastifyReply) => {
     const { id } = request.params
     const userId = Number(id)
@@ -472,7 +481,7 @@ export default async function userRoutes(fastify: FastifyInstance) {
       return reply.code(404).send(apiError(ErrorCode.USER_NOT_FOUND))
     }
 
-    const { email, password, avatarStyle, currentPassword, emailCode } = request.body
+    const { email, password, avatarStyle, avatarUrl, currentPassword, emailCode } = request.body
 
     // 敏感操作二次验证：修改密码或邮箱时需要验证（管理员修改他人时跳过）
     if (request.user.id === userId) {
@@ -517,7 +526,7 @@ export default async function userRoutes(fastify: FastifyInstance) {
       }
     }
 
-    const updates: { email?: string; passwordHash?: string; avatarStyle?: string } = {}
+    const updates: { email?: string; passwordHash?: string; avatarStyle?: string; avatarUrl?: string | null } = {}
 
     if (email !== undefined) {
       const validationResult = await validateEmailChangeTarget(email, user.email, userId)
@@ -549,6 +558,16 @@ export default async function userRoutes(fastify: FastifyInstance) {
       updates.avatarStyle = avatarStyle
     }
 
+    if (avatarUrl !== undefined) {
+      if (avatarUrl === null) {
+        updates.avatarUrl = null
+      } else if (AVATAR_URL_PATTERN.test(avatarUrl)) {
+        updates.avatarUrl = avatarUrl
+      } else {
+        return reply.code(400).send(apiError(ErrorCode.INVALID_PARAMS, 'Avatar URL must match https://cdn.nodeimage.com/i/*.jpeg/jpg/png/webp'))
+      }
+    }
+
     if (Object.keys(updates).length > 0) {
       await db.updateUser(userId, updates)
 
@@ -562,6 +581,7 @@ export default async function userRoutes(fastify: FastifyInstance) {
       if (email !== undefined) updateActions.push('email')
       if (password) updateActions.push('password')
       if (avatarStyle) updateActions.push('avatarStyle')
+      if (avatarUrl !== undefined) updateActions.push('avatarUrl')
 
       await createLog(
         request.user.id,

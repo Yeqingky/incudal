@@ -8,14 +8,18 @@ const props = withDefaults(defineProps<{
   username: string
   email?: string | null
   avatarStyle?: string
+  avatarUrl?: string | null
   badgeId?: string | null
   preferBadge?: boolean
+  preferCustomUrl?: boolean
   size?: number
 }>(), {
   email: null,
   avatarStyle: '',
+  avatarUrl: null,
   badgeId: null,
   preferBadge: true,
+  preferCustomUrl: true,
   size: 32
 })
 
@@ -73,7 +77,7 @@ function getStableRandomIndex(seed: string): number {
   return Math.abs(hash) % styleKeys.length
 }
 
-const avatarUrl = computed(() => {
+const diceBearUrl = computed(() => {
   if (!props.username) return ''
   
   // 如果没有指定风格或风格无效，根据用户名随机选择
@@ -99,6 +103,14 @@ const effectiveBadgeId = computed(() => {
   return null
 })
 
+const effectiveAvatarUrl = computed(() => {
+  if (props.avatarUrl) return props.avatarUrl
+  if (props.preferCustomUrl && authStore.user?.username === props.username && authStore.user.avatarUrl) {
+    return authStore.user.avatarUrl
+  }
+  return null
+})
+
 const sizeStyle = computed(() => ({
   width: `${props.size}px`,
   height: `${props.size}px`
@@ -114,8 +126,16 @@ const sizeStyle = computed(() => ({
     variant="avatar"
   />
   <img 
-    v-else-if="avatarUrl"
-    :src="avatarUrl" 
+    v-else-if="effectiveAvatarUrl"
+    :src="effectiveAvatarUrl" 
+    :alt="username"
+    class="rounded-full object-cover"
+    :style="sizeStyle"
+    loading="lazy"
+  />
+  <img 
+    v-else-if="diceBearUrl"
+    :src="diceBearUrl" 
     :alt="username"
     class="rounded-full"
     :style="sizeStyle"

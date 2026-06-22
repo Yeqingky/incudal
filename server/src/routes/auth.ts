@@ -67,6 +67,7 @@ async function buildAuthUserPayload(user: {
   role: 'admin' | 'user'
   avatar_style: string
   avatar_badge_id?: string | null
+  avatar_url?: string | null
   has_created_host_before?: boolean
 }) {
   const hostingFeatureStatus = await getUserHostingFeatureStatus(user.id)
@@ -78,6 +79,7 @@ async function buildAuthUserPayload(user: {
     role: user.role,
     avatarStyle: user.avatar_style,
     avatarBadgeId: user.avatar_badge_id ?? null,
+    avatarUrl: user.avatar_url ?? null,
     hasCreatedHostBefore: hostingFeatureStatus.hasCreatedHostBefore,
     canAccessHostingFeature: hostingFeatureStatus.canAccessHostingFeature
   }
