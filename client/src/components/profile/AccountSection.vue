@@ -1,19 +1,16 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import api from '@/api'
 import { useAuthStore } from '@/stores/auth'
-import { useBadgeStore } from '@/stores/badges'
 import { useThemeStore } from '@/stores/theme'
 import { useToast } from '@/stores/toast'
 import UserAvatar from '@/components/UserAvatar.vue'
-import BadgeImage from '@/components/BadgeImage.vue'
 import ChangeEmailModal from '@/components/profile/ChangeEmailModal.vue'
 import type { User } from '@/types/api'
 
 const { t } = useI18n()
 const authStore = useAuthStore()
-const badgeStore = useBadgeStore()
 const themeStore = useThemeStore()
 const toast = useToast()
 const userDetails = ref<User | null>(null)
@@ -21,11 +18,9 @@ const loading = ref<boolean>(true)
 
 const AVATAR_URL_PATTERN = /^https:\/\/cdn\.nodeimage\.com\/i\/.+\.(jpeg|jpg|png|webp)$/i
 
-// 头像模式: 'badge' = 勋章, 'style' = DiceBear 风格, 'customUrl' = 自定义图片
-const avatarMode = ref<'badge' | 'style' | 'customUrl'>(
-  authStore.user?.avatarBadgeId ? 'badge'
-    : authStore.user?.avatarUrl ? 'customUrl'
-    : 'style'
+// 头像模式: 'style' = DiceBear 风格, 'customUrl' = 自定义图片
+const avatarMode = ref<'style' | 'customUrl'>(
+  authStore.user?.avatarUrl ? 'customUrl' : 'style'
 )
 
 // DiceBear 风格相关
@@ -46,17 +41,6 @@ const showChangeEmailModal = ref(false)
 // 自定义头像 URL 相关
 const customAvatarUrl = ref<string>(authStore.user?.avatarUrl || '')
 const savingAvatarUrl = ref(false)
-
-const appliedBadge = computed(() => {
-  if (!authStore.user?.avatarBadgeId) return null
-  return badgeStore.getBadge(authStore.user.avatarBadgeId)
-})
-
-onMounted(() => {
-  if (authStore.user?.avatarBadgeId) {
-    badgeStore.ensureBadge(authStore.user.avatarBadgeId)
-  }
-})
 
 function getStyleLabel(style: string): string {
   return t(`profile.avatar.styles.${style}`)
@@ -119,7 +103,7 @@ async function clearCustomAvatarUrl(): Promise<void> {
       authStore.user.avatarUrl = null
     }
     customAvatarUrl.value = ''
-    avatarMode.value = 'badge'
+    avatarMode.value = 'style'
     toast.success(t('profile.avatar.urlCleared'))
   } catch (error) {
     console.error('Failed to clear avatar URL:', error)
@@ -129,7 +113,7 @@ async function clearCustomAvatarUrl(): Promise<void> {
   }
 }
 
-function switchToMode(mode: 'badge' | 'style' | 'customUrl'): void {
+function switchToMode(mode: 'style' | 'customUrl'): void {
   if (mode === 'customUrl') {
     customAvatarUrl.value = authStore.user?.avatarUrl || ''
   }
@@ -234,15 +218,6 @@ defineExpose({ loadUserDetails })
           <div class="flex gap-1 mb-4 p-0.5 rounded-lg bg-gray-100 dark:bg-gray-800 w-fit">
             <button
               class="px-3 py-1.5 text-sm rounded-md transition-all"
-              :class="avatarMode === 'badge'
-                ? 'bg-white dark:bg-gray-700 text-themed font-medium shadow-sm'
-                : 'text-themed-muted hover:text-themed'"
-              @click="switchToMode('badge')"
-            >
-              🏅 {{ $t('profile.avatar.tabBadge') }}
-            </button>
-            <button
-              class="px-3 py-1.5 text-sm rounded-md transition-all"
               :class="avatarMode === 'style'
                 ? 'bg-white dark:bg-gray-700 text-themed font-medium shadow-sm'
                 : 'text-themed-muted hover:text-themed'"
@@ -260,40 +235,6 @@ defineExpose({ loadUserDetails })
               🖼️ {{ $t('profile.avatar.tabCustomUrl') }}
             </button>
           </div>
-
-          <!-- 勋章模式 -->
-          <template v-if="avatarMode === 'badge'">
-            <div class="flex flex-col sm:flex-row items-start gap-6 mb-4">
-              <div class="flex-shrink-0 flex flex-col items-center gap-2">
-                <template v-if="authStore.user?.avatarBadgeId">
-                  <BadgeImage
-                    :badge-id="authStore.user.avatarBadgeId"
-                    :size="96"
-                    variant="avatar"
-                  />
-                  <span v-if="appliedBadge" class="text-sm text-themed-secondary text-center">
-                    {{ appliedBadge.name }}
-                  </span>
-                </template>
-                <template v-else>
-                  <div class="w-24 h-24 rounded-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center text-themed-muted text-xs text-center px-2">
-                    {{ $t('profile.avatar.noBadge') }}
-                  </div>
-                </template>
-              </div>
-              <div class="flex-1 text-sm text-themed-secondary leading-relaxed">
-                <p v-if="authStore.user?.avatarBadgeId" class="mb-2">
-                  {{ $t('profile.avatar.badgeApplied') }}
-                </p>
-                <p v-else class="mb-2">
-                  {{ $t('profile.avatar.badgeNotApplied') }}
-                </p>
-                <router-link to="/entertainment" class="text-blue-500 hover:text-blue-600">
-                  {{ $t('profile.avatar.manageBadges') }}
-                </router-link>
-              </div>
-            </div>
-          </template>
 
           <!-- DiceBear 风格模式 -->
           <template v-if="avatarMode === 'style'">
