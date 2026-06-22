@@ -853,7 +853,7 @@ export default async function agentRoutes(fastify: FastifyInstance) {
       .header('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
       .header('Pragma', 'no-cache')
       .header('Expires', '0')
-      .send(manifest)
+      .send(JSON.stringify(manifest, null, 2))
   })
 
   fastify.get<{ Params: AgentInstallTokenParams }>('/install-config/:token', async (
