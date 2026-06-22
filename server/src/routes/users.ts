@@ -189,6 +189,7 @@ export default async function userRoutes(fastify: FastifyInstance) {
           status: string
           avatar_style: string
           avatar_badge_id?: string | null
+          avatar_url?: string | null
           // 新配额系统
           host_limit?: number
           host_used?: number
@@ -211,6 +212,7 @@ export default async function userRoutes(fastify: FastifyInstance) {
           status: user.status,
           avatarStyle: user.avatar_style,
           avatarBadgeId: user.avatar_badge_id ?? null,
+          avatarUrl: (user as { avatar_url?: string | null }).avatar_url ?? null,
           twoFAEnabled: twoFAMap.get(user.id) || false,
           instanceCount: instanceCountMap.get(user.id) || 0,
           hasGithubBinding: githubBindingMap.get(user.id) || false,

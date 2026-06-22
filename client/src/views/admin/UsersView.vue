@@ -1160,6 +1160,7 @@ function _getQuotaPercent(used, limit) {
                       :username="user.username" 
                       :email="user.email"
                       :avatar-style="user.avatarStyle || 'bigSmile'"
+                      :avatar-url="user.avatarUrl || null"
                       :badge-id="user.avatarBadgeId || null"
                       :size="36"
                     />

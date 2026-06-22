@@ -185,6 +185,8 @@ export async function getUsersPaginated(options: PaginationOptions = {}): Promis
       role: u.role,
       status: u.status,
       avatar_style: u.avatarStyle,
+      avatar_badge_id: u.avatarBadgeId ?? null,
+      avatar_url: u.avatarUrl ?? null,
       created_at: u.createdAt.toISOString(),
       updated_at: u.updatedAt.toISOString(),
       // 配额信息（新配额系统）
