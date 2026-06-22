@@ -44,6 +44,8 @@ const statusInfo = computed(() => {
     : { label: t('admin.packages.inactive'), class: 'badge-default', dot: 'bg-gray-500' }
 })
 
+const hasPaidPlans = computed(() => (pkg.value?.planSummary?.total || 0) > 0)
+
 const tabs = computed(() => [
   { key: 'overview' as TabType, labelKey: 'resources.packages.detail.tabs.overview', icon: 'M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z' },
   ...(canManagePackage.value
@@ -178,6 +180,35 @@ function formatTrafficLimit(bytes: string | null | undefined): string {
   return formatBytes(value)
 }
 
+function formatPrice(cents: number | null | undefined): string {
+  if (cents === null || cents === undefined) return '-'
+  return `¥${(cents / 100).toFixed(2)}`
+}
+
+function formatNumberRange(min: number | null | undefined, max: number | null | undefined, formatter: (value: number) => string): string {
+  if (min === null || min === undefined) return '-'
+  if (max === null || max === undefined || min === max) return formatter(min)
+  return `${formatter(min)} - ${formatter(max)}`
+}
+
+function formatTrafficRange(min: string | null | undefined, max: string | null | undefined): string {
+  if (!min) return '-'
+  if (!max || min === max) return formatTrafficLimit(min)
+  return `${formatTrafficLimit(min)} - ${formatTrafficLimit(max)}`
+}
+
+function formatSpeedRange(min: string | null | undefined, max: string | null | undefined): string {
+  const formatSpeed = (value: string | null | undefined): string => {
+    if (!value || value === '0') return '-'
+    const bytes = Number(value)
+    if (!Number.isFinite(bytes) || bytes <= 0) return '-'
+    return `${Math.round(bytes / (1024 * 1024))} Mbps`
+  }
+  if (!min) return '-'
+  if (!max || min === max) return formatSpeed(min)
+  return `${formatSpeed(min)} - ${formatSpeed(max)}`
+}
+
 function formatTrafficMultiplier(value: unknown): string {
   const multiplier = Number(value ?? 1)
   if (!Number.isFinite(multiplier)) return '1x'
@@ -306,10 +337,11 @@ async function deletePackage(): Promise<void> {
       </div>
 
       <div v-if="activeTab === 'overview'" class="space-y-6">
-        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+        <div v-if="!hasPaidPlans" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
           <div class="card p-4">
-            <div class="text-xs text-themed-muted">{{ t('admin.packages.cpu') }}</div>
+            <div class="text-xs text-themed-muted">{{ t('resources.packages.detail.overview.freePackage') }}</div>
             <div class="mt-2 text-2xl font-semibold text-themed">{{ pkg.cpu_max }}%</div>
+            <div class="text-xs text-themed-muted">{{ t('admin.packages.cpu') }}</div>
           </div>
           <div class="card p-4">
             <div class="text-xs text-themed-muted">{{ t('admin.packages.memory') }}</div>
@@ -322,6 +354,33 @@ async function deletePackage(): Promise<void> {
           <div class="card p-4">
             <div class="text-xs text-themed-muted">{{ t('resources.packages.instanceColumn') }}</div>
             <div class="mt-2 text-2xl font-semibold text-themed">{{ pkg.instance_count || 0 }}</div>
+          </div>
+        </div>
+
+        <div v-else class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+          <div class="card p-4">
+            <div class="text-xs text-themed-muted">{{ t('resources.packages.detail.overview.availablePlans') }}</div>
+            <div class="mt-2 text-2xl font-semibold text-themed">{{ pkg.planSummary?.availableCount || 0 }}</div>
+            <div class="text-xs text-themed-muted">{{ t('resources.packages.detail.overview.totalPlans', { count: pkg.planSummary?.total || 0 }) }}</div>
+          </div>
+          <div class="card p-4">
+            <div class="text-xs text-themed-muted">{{ t('resources.packages.detail.overview.lowestPrice') }}</div>
+            <div class="mt-2 text-2xl font-semibold text-themed">{{ formatPrice(pkg.planSummary?.minPrice) }}</div>
+            <div class="text-xs text-themed-muted">{{ t('resources.plans.monthly') }} {{ formatPrice(pkg.planSummary?.minMonthlyPrice) }}</div>
+          </div>
+          <div class="card p-4">
+            <div class="text-xs text-themed-muted">{{ t('resources.packages.detail.overview.resourceRange') }}</div>
+            <div class="mt-2 text-lg font-semibold text-themed">
+              {{ formatNumberRange(pkg.planSummary?.minCpu, pkg.planSummary?.maxCpu, value => `${value}%`) }}
+            </div>
+            <div class="text-xs text-themed-muted">
+              {{ formatNumberRange(pkg.planSummary?.minMemory, pkg.planSummary?.maxMemory, formatMemory) }} / {{ formatNumberRange(pkg.planSummary?.minDisk, pkg.planSummary?.maxDisk, formatDisk) }}
+            </div>
+          </div>
+          <div class="card p-4">
+            <div class="text-xs text-themed-muted">{{ t('resources.packages.detail.overview.trafficRange') }}</div>
+            <div class="mt-2 text-lg font-semibold text-themed">{{ formatTrafficRange(pkg.planSummary?.minTrafficLimit, pkg.planSummary?.maxTrafficLimit) }}</div>
+            <div class="text-xs text-themed-muted">{{ formatSpeedRange(pkg.planSummary?.minTrafficLimitSpeed, pkg.planSummary?.maxTrafficLimitSpeed) }}</div>
           </div>
         </div>
 
@@ -420,7 +479,7 @@ async function deletePackage(): Promise<void> {
         </div>
       </div>
 
-      <PackagePlansTab v-else-if="activeTab === 'plans' && canManagePackage" :pkg="pkg" />
+      <PackagePlansTab v-else-if="activeTab === 'plans' && canManagePackage" :pkg="pkg" @changed="onConfigSaved" />
 
       <PackageQuotaReleaseModal
         :visible="showQuotaReleaseModal"

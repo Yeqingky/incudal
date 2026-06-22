@@ -15,6 +15,8 @@ const hiddenHostingRouteNames = new Set([
   'my-package-detail',
   'my-package-create',
   'my-package-edit',
+  'my-package-plan-create',
+  'my-package-plan-edit',
   'hosting-wallet'
 ])
 const hiddenMailRouteNames = new Set(['mail', 'mail-domain'])
@@ -209,6 +211,18 @@ const routes: RouteRecordRaw[] = [
     name: 'my-package-detail',
     component: () => import('@/views/resources/MyPackageDetailView.vue'),
     meta: { requiresAuth: true, titleKey: 'nav.myPackageDetail', title: '套餐详情' }
+  },
+  {
+    path: '/resources/packages/:id/plans/create',
+    name: 'my-package-plan-create',
+    component: () => import('@/views/resources/PackagePlanFormView.vue'),
+    meta: { requiresAuth: true, titleKey: 'nav.myPackagePlanCreate', title: '创建方案' }
+  },
+  {
+    path: '/resources/packages/:id/plans/:planId/edit',
+    name: 'my-package-plan-edit',
+    component: () => import('@/views/resources/PackagePlanFormView.vue'),
+    meta: { requiresAuth: true, titleKey: 'nav.myPackagePlanEdit', title: '编辑方案' }
   },
   {
     path: '/resources/packages/:id/edit',

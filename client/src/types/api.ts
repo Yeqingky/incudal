@@ -992,6 +992,7 @@ export interface Package {
   hostingZoneName?: string
   hostingZoneLogoUrl?: string
   soldOut?: boolean  // 是否售罄（所有宿主机都无法满足最低配置）
+  planSummary?: PackagePlanSummary
   // 全局共享配置（仅当 isGlobalShared = true 或套餐所有者查看时）
   global_shared?: boolean
   global_quota_multiplier?: null  // 公开套餐不再使用资源配额倍数限制
@@ -1020,6 +1021,27 @@ export interface Package {
     avatarStyle: string
     avatarBadgeId?: string | null
   }
+}
+
+export interface PackagePlanSummary {
+  total: number
+  availableCount: number
+  soldOutCount: number
+  inactiveCount: number
+  minPrice: number | null
+  maxPrice: number | null
+  minMonthlyPrice: number | null
+  maxMonthlyPrice: number | null
+  minCpu: number | null
+  maxCpu: number | null
+  minMemory: number | null
+  maxMemory: number | null
+  minDisk: number | null
+  maxDisk: number | null
+  minTrafficLimit: string | null
+  maxTrafficLimit: string | null
+  minTrafficLimitSpeed: string | null
+  maxTrafficLimitSpeed: string | null
 }
 
 export interface CreatePackageRequest {
@@ -1542,14 +1564,15 @@ export interface PaginatedTicketMessages {
 // 套餐方案
 export interface PackagePlan {
   id: number
-  packageId: number
+  packageId?: number
   name: string
   description: string | null
   price: number
   billingCycle: number // 账期（月）
-  setupFee?: number    // 开通费（分）
-  trafficResetEnabled?: boolean
-  trafficResetPrice?: number
+  setupFee: number    // 开通费（分）
+  trafficResetEnabled: boolean
+  trafficResetPrice: number
+  monthlyPrice: number
   cpu: number
   memory: number
   disk: number
@@ -1557,12 +1580,15 @@ export interface PackagePlan {
   snapshotLimit: number
   backupLimit: number
   siteLimit: number
-  monthlyTrafficLimit: string | null
+  monthlyTrafficLimit?: string | null
+  trafficLimit: string
+  trafficLimitSpeed: string
+  swapSize: number
   isActive: boolean
   isSoldOut: boolean
   sortOrder: number
   slaGuarantee: number | null // SLA保证百分比，1-100
-  createdAt: string
+  createdAt?: string
   package?: {
     id: number
     name: string

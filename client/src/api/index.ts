@@ -43,6 +43,7 @@ import type {
   CreateHostRequest,
   UpdateHostRequest,
   Package,
+  PackagePlan,
   CreatePackageRequest,
   UpdatePackageRequest,
   SshKey,
@@ -1954,33 +1955,11 @@ const api = {
     }> => http.get(`/packages/${packageId}/owner-info`),
 
     // 套餐方案管理
-    getPlans: (packageId: number, options?: { activeOnly?: boolean }): Promise<{
-      plans: Array<{
-        id: number
-        name: string
-        description: string | null
-        cpu: number
-        memory: number
-        disk: number
-        portLimit: number
-        snapshotLimit: number
-        backupLimit: number
-        siteLimit: number
-        swapSize: number
-        trafficLimit: string
-        trafficLimitSpeed: string
-        price: number
-        billingCycle: number
-        setupFee: number
-        trafficResetEnabled: boolean
-        trafficResetPrice: number
-        monthlyPrice: number
-        isActive: boolean
-        isSoldOut: boolean
-        sortOrder: number
-        slaGuarantee: number | null
-      }>
-    }> => http.get(`/packages/${packageId}/plans`, { params: options }),
+    getPlans: (packageId: number, options?: { activeOnly?: boolean }): Promise<{ plans: PackagePlan[] }> =>
+      http.get(`/packages/${packageId}/plans`, { params: options }),
+
+    getPlan: (packageId: number, planId: number): Promise<{ plan: PackagePlan }> =>
+      http.get(`/packages/${packageId}/plans/${planId}`),
 
     createPlan: (packageId: number, data: {
       name: string
