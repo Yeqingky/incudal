@@ -134,6 +134,8 @@ export const ErrorCode = {
     PLAN_SOLD_OUT: 'PLAN_SOLD_OUT',
     CANNOT_CREATE_OWN_PAID_PACKAGE: 'CANNOT_CREATE_OWN_PAID_PACKAGE',
     BALANCE_INSUFFICIENT: 'BALANCE_INSUFFICIENT',
+    TRAFFIC_RESET_NOT_ALLOWED: 'TRAFFIC_RESET_NOT_ALLOWED',
+    TRAFFIC_RESET_NOT_NEEDED: 'TRAFFIC_RESET_NOT_NEEDED',
 
     // Host resource errors
     HOST_UNAVAILABLE: 'HOST_UNAVAILABLE',
@@ -465,6 +467,8 @@ export const ErrorMessages: Record<ErrorCodeType, string> = {
     [ErrorCode.PLAN_SOLD_OUT]: 'Plan is sold out',
     [ErrorCode.CANNOT_CREATE_OWN_PAID_PACKAGE]: 'Cannot create instance with your own paid package',
     [ErrorCode.BALANCE_INSUFFICIENT]: 'Insufficient balance',
+    [ErrorCode.TRAFFIC_RESET_NOT_ALLOWED]: 'Traffic reset is not allowed for this instance',
+    [ErrorCode.TRAFFIC_RESET_NOT_NEEDED]: 'No traffic usage to reset',
 
     // Host resource errors
     [ErrorCode.HOST_UNAVAILABLE]: 'Selected host is unavailable or has insufficient resources',

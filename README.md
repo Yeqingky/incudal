@@ -7,7 +7,7 @@
 Incudal 基于 Incus 的 NAT VPS 销售与管理面板。
 项目支持 LXC / KVM 实例、套餐与镜像管理、账务计费、节点托管、用户后台、管理员后台以及宿主机 Agent。
 
-> 演示站：https://demo.incudal.com<br/>
+> 演示站：https://demo.incudal.com | <a href="https://t.me/incudal_group">交流群聊</a><br/>
 > <strong>仅供学习与参考，本项目存在诸多不完善之处。有任何问题建议 Fork 后使用 AI 解决。</strong><br/>
 
 ## 主要功能

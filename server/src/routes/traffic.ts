@@ -5,6 +5,8 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import * as trafficDb from '../db/traffic.js'
 import * as db from '../db/index.js'
+import { prisma } from '../db/prisma.js'
+import { createLog } from '../db/logs.js'
 import { formatBytes } from '../services/traffic-notifier.js'
 import {
     calculateInstanceTrafficStatus,
@@ -31,6 +33,52 @@ function calculatePercentage(used: bigint, limit: bigint | null): number {
     // 先转换为浮点数再计算百分比,避免整数除法导致的精度丢失
     const percentage = (Number(used) / Number(limit)) * 100
     return Math.min(100, percentage)
+}
+
+function formatCurrency(amount: number): string {
+    return `¥${amount.toFixed(2)}`
+}
+
+function getTrafficResetInfo(
+    instance: Awaited<ReturnType<typeof trafficDb.getInstanceTrafficInfo>>,
+    options: { freeResetAllowed?: boolean } = {}
+) {
+    const plan = instance?.packagePlan
+    const priceCents = plan ? Number(plan.trafficResetPrice) || 0 : 0
+
+    if (options.freeResetAllowed) {
+        return {
+            resetAllowed: true,
+            resetPrice: 0,
+            resetPriceFormatted: formatCurrency(0),
+            resetDisabledReason: instance && instance.monthlyTrafficUsed > 0n ? null : 'NO_USAGE'
+        }
+    }
+
+    if (!plan || !instance?.packagePlanId) {
+        return {
+            resetAllowed: false,
+            resetPrice: 0,
+            resetPriceFormatted: null,
+            resetDisabledReason: 'NO_PAID_PLAN'
+        }
+    }
+
+    if (!plan.trafficResetEnabled) {
+        return {
+            resetAllowed: false,
+            resetPrice: 0,
+            resetPriceFormatted: null,
+            resetDisabledReason: 'PLAN_DISABLED'
+        }
+    }
+
+    return {
+        resetAllowed: true,
+        resetPrice: priceCents,
+        resetPriceFormatted: formatCurrency(priceCents / 100),
+        resetDisabledReason: instance.monthlyTrafficUsed > 0n ? null : 'NO_USAGE'
+    }
 }
 
 export default async function trafficRoutes(fastify: FastifyInstance): Promise<void> {
@@ -173,6 +221,9 @@ export default async function trafficRoutes(fastify: FastifyInstance): Promise<v
         }
         const trafficResetDay = host?.traffic_reset_day ?? 1
         const { periodStart, periodEnd } = getTrafficPeriod(trafficResetDay)
+        const resetInfo = getTrafficResetInfo(instance, {
+            freeResetAllowed: request.user.role === 'admin' || (!!host && host.user_id === request.user.id)
+        })
 
         return {
             monthlyUsed: serializeBigInt(instance.monthlyTrafficUsed),
@@ -185,7 +236,8 @@ export default async function trafficRoutes(fastify: FastifyInstance): Promise<v
             percentage: calculatePercentage(instance.monthlyTrafficUsed, instance.monthlyTrafficLimit),
             trafficResetDay,
             periodStart: formatLocalDate(periodStart),
-            periodEnd: formatLocalDate(periodEnd)
+            periodEnd: formatLocalDate(periodEnd),
+            ...resetInfo
         }
     })
 
@@ -289,12 +341,14 @@ export default async function trafficRoutes(fastify: FastifyInstance): Promise<v
     })
 
     /**
-     * 重置实例月度流量（管理员或宿主机所有者）
+     * 重置实例月度流量
+     * 管理员或宿主机所有者免费重置，实例所有者按套餐配置付费重置。
      */
     fastify.post<{
         Params: { instanceId: string }
     }>('/instances/:instanceId/traffic/reset', {
-        onRequest: [fastify.authenticate]
+        onRequest: [fastify.authenticate],
+        config: { rateLimit: { max: 5, timeWindow: '1 minute' } }
     }, async (request: FastifyRequest<{
         Params: { instanceId: string }
     }>, reply: FastifyReply) => {
@@ -308,24 +362,251 @@ export default async function trafficRoutes(fastify: FastifyInstance): Promise<v
             return reply.code(404).send({ error: 'Instance not found' })
         }
 
-        // 权限检查：管理员或宿主机所有者可以重置实例流量
         const isAdmin = request.user.role === 'admin'
-        if (!isAdmin) {
-            if (instance.hostId) {
-                const host = await db.getHostById(instance.hostId)
-                if (!host || host.user_id !== request.user.id) {
-                    return reply.code(403).send({ error: 'Only admin or host owner can reset instance traffic' })
-                }
-            } else {
-                return reply.code(403).send({ error: 'Access denied' })
+        let host: Awaited<ReturnType<typeof db.getHostById>> = null
+        const isInstanceOwner = instance.userId === request.user.id
+        let isHostOwner = false
+
+        if (instance.hostId) {
+            host = await db.getHostById(instance.hostId)
+            isHostOwner = !!host && host.user_id === request.user.id
+        }
+
+        if (!isAdmin && !isHostOwner && !isInstanceOwner) {
+            return reply.code(403).send(apiError(ErrorCode.FORBIDDEN))
+        }
+
+        if (isAdmin || isHostOwner) {
+            await trafficDb.resetInstanceMonthlyTraffic(instanceId)
+            try {
+                const { reconcileTrafficStateForInstanceIds } = await import('../services/traffic-scheduler.js')
+                await reconcileTrafficStateForInstanceIds([instanceId])
+            } catch (error) {
+                request.log.warn(error, 'Traffic reset completed, but immediate traffic state reconciliation failed')
+            }
+
+            try {
+                await createLog(
+                    request.user.id,
+                    'instance',
+                    'traffic.reset',
+                    `Reset instance "${instance.name}" traffic without charge`,
+                    'success'
+                )
+            } catch (error) {
+                request.log.warn(error, 'Traffic reset completed, but audit log creation failed')
+            }
+
+            const updatedInstance = await trafficDb.getInstanceTrafficInfo(instanceId)
+            return {
+                success: true,
+                message: 'Instance traffic reset completed',
+                chargedAmount: 0,
+                balanceAfter: null,
+                traffic: updatedInstance
+                    ? {
+                        monthlyUsed: serializeBigInt(updatedInstance.monthlyTrafficUsed),
+                        monthlyUsedFormatted: formatBytes(updatedInstance.monthlyTrafficUsed),
+                        trafficStatus: updatedInstance.trafficStatus,
+                        percentage: calculatePercentage(updatedInstance.monthlyTrafficUsed, updatedInstance.monthlyTrafficLimit),
+                        ...getTrafficResetInfo(updatedInstance, { freeResetAllowed: true })
+                    }
+                    : null
             }
         }
 
-        await trafficDb.resetInstanceMonthlyTraffic(instanceId)
-        const { reconcileTrafficStateForInstanceIds } = await import('../services/traffic-scheduler.js')
-        await reconcileTrafficStateForInstanceIds([instanceId])
+        try {
+            const result = await prisma.$transaction(async (tx) => {
+                const freshInstance = await tx.instance.findUnique({
+                    where: { id: instanceId },
+                    select: {
+                        id: true,
+                        name: true,
+                        userId: true,
+                        packagePlanId: true,
+                        monthlyTrafficLimit: true,
+                        monthlyTrafficUsed: true,
+                        trafficStatus: true,
+                        status: true,
+                        packagePlan: {
+                            select: {
+                                id: true,
+                                trafficResetEnabled: true,
+                                trafficResetPrice: true
+                            }
+                        }
+                    }
+                })
 
-        return { success: true, message: 'Instance traffic reset completed' }
+                if (!freshInstance) {
+                    throw new Error('INSTANCE_NOT_FOUND')
+                }
+                if (freshInstance.userId !== request.user.id) {
+                    throw new Error('FORBIDDEN')
+                }
+                if (freshInstance.status === 'deleted') {
+                    throw new Error('INSTANCE_NOT_FOUND')
+                }
+                if (!freshInstance.packagePlanId || !freshInstance.packagePlan?.trafficResetEnabled) {
+                    throw new Error('TRAFFIC_RESET_NOT_ALLOWED')
+                }
+                if (freshInstance.monthlyTrafficUsed <= 0n) {
+                    throw new Error('TRAFFIC_RESET_NOT_NEEDED')
+                }
+
+                const priceCents = Number(freshInstance.packagePlan.trafficResetPrice) || 0
+                const chargeAmount = Math.round(Math.max(0, priceCents)) / 100
+                let balanceAfter: number | null = null
+
+                const resetResult = await tx.instance.updateMany({
+                    where: {
+                        id: instanceId,
+                        userId: request.user.id,
+                        status: { not: 'deleted' },
+                        monthlyTrafficUsed: { gt: 0n }
+                    },
+                    data: {
+                        monthlyTrafficUsed: 0n,
+                        trafficStatus: 'NORMAL'
+                    }
+                })
+
+                if (resetResult.count !== 1) {
+                    throw new Error('TRAFFIC_RESET_NOT_NEEDED')
+                }
+
+                if (chargeAmount > 0) {
+                    const balanceUpdate = await tx.user.updateMany({
+                        where: {
+                            id: request.user.id,
+                            balance: { gte: chargeAmount }
+                        },
+                        data: {
+                            balance: { decrement: chargeAmount }
+                        }
+                    })
+
+                    if (balanceUpdate.count !== 1) {
+                        throw new Error('BALANCE_INSUFFICIENT')
+                    }
+
+                    const updatedUser = await tx.user.findUnique({
+                        where: { id: request.user.id },
+                        select: { balance: true }
+                    })
+                    if (!updatedUser) {
+                        throw new Error('USER_NOT_FOUND')
+                    }
+
+                    balanceAfter = Number(updatedUser.balance)
+                    const balanceBefore = Number((balanceAfter + chargeAmount).toFixed(2))
+
+                    await tx.balanceLog.create({
+                        data: {
+                            userId: request.user.id,
+                            type: 'consume',
+                            amount: -chargeAmount,
+                            balanceBefore,
+                            balanceAfter,
+                            instanceId,
+                            remark: `重置实例 ${freshInstance.name} 本周期流量`
+                        }
+                    })
+                } else {
+                    const userBalance = await tx.user.findUnique({
+                        where: { id: request.user.id },
+                        select: { balance: true }
+                    })
+                    balanceAfter = userBalance ? Number(userBalance.balance) : null
+                }
+
+                const updatedInstance = await tx.instance.findUnique({
+                    where: { id: instanceId },
+                    select: {
+                        id: true,
+                        name: true,
+                        packagePlanId: true,
+                        monthlyTrafficLimit: true,
+                        monthlyTrafficUsed: true,
+                        trafficStatus: true,
+                        packagePlan: {
+                            select: {
+                                id: true,
+                                trafficResetEnabled: true,
+                                trafficResetPrice: true
+                            }
+                        }
+                    }
+                })
+                if (!updatedInstance) {
+                    throw new Error('INSTANCE_NOT_FOUND')
+                }
+
+                return { updatedInstance, chargeAmount, balanceAfter }
+            })
+
+            try {
+                const { reconcileTrafficStateForInstanceIds } = await import('../services/traffic-scheduler.js')
+                await reconcileTrafficStateForInstanceIds([instanceId])
+            } catch (error) {
+                request.log.warn(error, 'Paid traffic reset completed, but immediate traffic state reconciliation failed')
+            }
+
+            try {
+                await createLog(
+                    request.user.id,
+                    'instance',
+                    'traffic.reset',
+                    `Reset instance "${instance.name}" traffic with charge ${formatCurrency(result.chargeAmount)}`,
+                    'success'
+                )
+            } catch (error) {
+                request.log.warn(error, 'Paid traffic reset completed, but audit log creation failed')
+            }
+
+            return {
+                success: true,
+                message: 'Instance traffic reset completed',
+                chargedAmount: result.chargeAmount,
+                balanceAfter: result.balanceAfter,
+                traffic: {
+                    monthlyUsed: serializeBigInt(result.updatedInstance.monthlyTrafficUsed),
+                    monthlyUsedFormatted: formatBytes(result.updatedInstance.monthlyTrafficUsed),
+                    trafficStatus: result.updatedInstance.trafficStatus,
+                    percentage: calculatePercentage(result.updatedInstance.monthlyTrafficUsed, result.updatedInstance.monthlyTrafficLimit),
+                    ...getTrafficResetInfo({
+                        id: result.updatedInstance.id,
+                        name: result.updatedInstance.name,
+                        userId: request.user.id,
+                        hostId: instance.hostId,
+                        packagePlanId: result.updatedInstance.packagePlanId,
+                        monthlyTrafficLimit: result.updatedInstance.monthlyTrafficLimit,
+                        monthlyTrafficUsed: result.updatedInstance.monthlyTrafficUsed,
+                        trafficStatus: result.updatedInstance.trafficStatus,
+                        packagePlan: result.updatedInstance.packagePlan
+                    })
+                }
+            }
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            if (message === 'INSTANCE_NOT_FOUND') {
+                return reply.code(404).send({ error: 'Instance not found' })
+            }
+            if (message === 'FORBIDDEN') {
+                return reply.code(403).send(apiError(ErrorCode.FORBIDDEN))
+            }
+            if (message === 'TRAFFIC_RESET_NOT_ALLOWED') {
+                return reply.code(400).send(apiError(ErrorCode.TRAFFIC_RESET_NOT_ALLOWED))
+            }
+            if (message === 'TRAFFIC_RESET_NOT_NEEDED') {
+                return reply.code(400).send(apiError(ErrorCode.TRAFFIC_RESET_NOT_NEEDED))
+            }
+            if (message === 'BALANCE_INSUFFICIENT') {
+                return reply.code(400).send(apiError(ErrorCode.BALANCE_INSUFFICIENT))
+            }
+            request.log.error(error, 'Failed to reset instance traffic')
+            return reply.code(500).send(apiError(ErrorCode.INTERNAL_ERROR))
+        }
     })
 
     // ==================== 管理员操作 ======================================

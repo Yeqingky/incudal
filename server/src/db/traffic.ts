@@ -726,9 +726,17 @@ export async function getInstanceTrafficInfo(instanceId: number) {
             name: true,
             userId: true,
             hostId: true,
+            packagePlanId: true,
             monthlyTrafficLimit: true,
             monthlyTrafficUsed: true,
-            trafficStatus: true
+            trafficStatus: true,
+            packagePlan: {
+                select: {
+                    id: true,
+                    trafficResetEnabled: true,
+                    trafficResetPrice: true
+                }
+            }
         }
     })
 }

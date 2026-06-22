@@ -25,6 +25,53 @@ type PackagePrerequisiteRequestFields = {
   requiredPackageId?: number | null
 }
 
+type PackagePlanResponse = {
+  id: number
+  name: string
+  description: string | null
+  cpu: number
+  memory: number
+  disk: number
+  portLimit: number
+  snapshotLimit: number
+  backupLimit: number
+  siteLimit: number
+  swapSize: number
+  trafficLimit: string
+  trafficLimitSpeed: string
+  price: number
+  billingCycle: number
+  setupFee: number
+  trafficResetEnabled: boolean
+  trafficResetPrice: number
+  monthlyPrice: number
+  isActive: boolean
+  isSoldOut: boolean
+  sortOrder: number
+  slaGuarantee: number | null
+}
+
+type PackagePlanSummary = {
+  total: number
+  availableCount: number
+  soldOutCount: number
+  inactiveCount: number
+  minPrice: number | null
+  maxPrice: number | null
+  minMonthlyPrice: number | null
+  maxMonthlyPrice: number | null
+  minCpu: number | null
+  maxCpu: number | null
+  minMemory: number | null
+  maxMemory: number | null
+  minDisk: number | null
+  maxDisk: number | null
+  minTrafficLimit: string | null
+  maxTrafficLimit: string | null
+  minTrafficLimitSpeed: string | null
+  maxTrafficLimitSpeed: string | null
+}
+
 function validatePackagePlanName(value: unknown): { valid: boolean; message?: string; sanitized?: string } {
   if (typeof value !== 'string') {
     return { valid: false, message: '方案名称不能为空' }
@@ -42,6 +89,99 @@ function validatePackagePlanName(value: unknown): { valid: boolean; message?: st
   }
 
   return { valid: true, sanitized: trimmed }
+}
+
+function serializePackagePlan(plan: any, pkg: { instance_type?: string | null }): PackagePlanResponse {
+  return {
+    id: plan.id,
+    name: plan.name,
+    description: plan.description,
+    cpu: plan.cpu,
+    memory: plan.memory,
+    disk: plan.disk,
+    portLimit: plan.portLimit,
+    snapshotLimit: plan.snapshotLimit,
+    backupLimit: plan.backupLimit,
+    siteLimit: plan.siteLimit,
+    swapSize: pkg.instance_type === 'vm' ? 0 : plan.swapSize,
+    trafficLimit: plan.trafficLimit.toString(),
+    trafficLimitSpeed: plan.trafficLimitSpeed,
+    price: Number(plan.price),
+    billingCycle: plan.billingCycle,
+    setupFee: Number(plan.setupFee),
+    trafficResetEnabled: plan.trafficResetEnabled,
+    trafficResetPrice: Number(plan.trafficResetPrice),
+    monthlyPrice: db.calculateMonthlyPrice(plan),
+    isActive: plan.isActive,
+    isSoldOut: plan.isSoldOut,
+    sortOrder: plan.sortOrder,
+    slaGuarantee: plan.slaGuarantee ? Number(plan.slaGuarantee) : null
+  }
+}
+
+function getNumberRange(values: number[]): { min: number | null; max: number | null } {
+  if (values.length === 0) return { min: null, max: null }
+  return {
+    min: Math.min(...values),
+    max: Math.max(...values)
+  }
+}
+
+function getBigIntStringRange(values: string[]): { min: string | null; max: string | null } {
+  const validValues = values
+    .map(value => {
+      try {
+        return BigInt(value || '0')
+      } catch {
+        return 0n
+      }
+    })
+    .filter(value => value > 0n)
+
+  if (validValues.length === 0) return { min: null, max: null }
+
+  let min = validValues[0]
+  let max = validValues[0]
+  for (const value of validValues) {
+    if (value < min) min = value
+    if (value > max) max = value
+  }
+  return { min: min.toString(), max: max.toString() }
+}
+
+function summarizePackagePlans(plans: any[]): PackagePlanSummary {
+  const availablePlans = plans.filter(plan => plan.isActive && !plan.isSoldOut)
+  const soldOutPlans = plans.filter(plan => plan.isActive && plan.isSoldOut)
+  const inactivePlans = plans.filter(plan => !plan.isActive)
+  const metricPlans = availablePlans.length > 0 ? availablePlans : plans
+  const priceRange = getNumberRange(metricPlans.map(plan => Number(plan.price)))
+  const monthlyPriceRange = getNumberRange(metricPlans.map(plan => db.calculateMonthlyPrice(plan)))
+  const cpuRange = getNumberRange(metricPlans.map(plan => plan.cpu))
+  const memoryRange = getNumberRange(metricPlans.map(plan => plan.memory))
+  const diskRange = getNumberRange(metricPlans.map(plan => plan.disk))
+  const trafficRange = getBigIntStringRange(metricPlans.map(plan => plan.trafficLimit.toString()))
+  const trafficSpeedRange = getBigIntStringRange(metricPlans.map(plan => String(plan.trafficLimitSpeed || '0')))
+
+  return {
+    total: plans.length,
+    availableCount: availablePlans.length,
+    soldOutCount: soldOutPlans.length,
+    inactiveCount: inactivePlans.length,
+    minPrice: priceRange.min,
+    maxPrice: priceRange.max,
+    minMonthlyPrice: monthlyPriceRange.min,
+    maxMonthlyPrice: monthlyPriceRange.max,
+    minCpu: cpuRange.min,
+    maxCpu: cpuRange.max,
+    minMemory: memoryRange.min,
+    maxMemory: memoryRange.max,
+    minDisk: diskRange.min,
+    maxDisk: diskRange.max,
+    minTrafficLimit: trafficRange.min,
+    maxTrafficLimit: trafficRange.max,
+    minTrafficLimitSpeed: trafficSpeedRange.min,
+    maxTrafficLimitSpeed: trafficSpeedRange.max
+  }
 }
 
 function validatePackageNetworkModeForInstanceType(
@@ -72,6 +212,12 @@ function validatePackagePlanPrice(value: unknown): string | null {
     return `方案价格不能超过 ¥${MAX_PACKAGE_PLAN_PRICE_YUAN}`
   }
   return null
+}
+
+function normalizeTrafficResetPrice(enabled: boolean | undefined, price: unknown): { value: number; error: string | null } {
+  const value = enabled ? (price ?? 0) : 0
+  const error = validatePackagePlanPrice(value)
+  return { value: typeof value === 'number' ? value : 0, error }
 }
 
 function normalizePublicPackageMaxInstances(value: unknown): number {
@@ -883,6 +1029,7 @@ export default async function packageRoutes(fastify: FastifyInstance) {
     }
 
     const isOwn = pkg.user_id === user.id
+    const canManagePackage = isOwn || isAdmin
 
     // 计算剩余配额信息
     // 安全注意：只有在用户有权限访问套餐（canAccess）时才计算配额信息
@@ -966,6 +1113,8 @@ export default async function packageRoutes(fastify: FastifyInstance) {
     const hasRequiredPackageInstance = requiredPackageId !== null
       ? await db.userHasNormalInstanceForPackage(user.id, requiredPackageId)
       : true
+    const packagePlans = await db.getPlansByPackageId(packageId, { activeOnly: !canManagePackage })
+    const planSummary = summarizePackagePlans(packagePlans)
 
     return {
       package: {
@@ -979,10 +1128,10 @@ export default async function packageRoutes(fastify: FastifyInstance) {
         network_mode: pkg.network_mode,
         instance_type: pkg.instance_type,  // 实例类型
         host_ids: (pkg as { host_ids?: number[] }).host_ids || [],
-        host_storage_pools: isOwn || isAdmin ? ((pkg as any).host_storage_pools || {}) : undefined,
-        host_traffic_multipliers: isOwn || isAdmin ? ((pkg as any).host_traffic_multipliers || {}) : undefined,
-        privileged: isOwn ? pkg.privileged : 0,
-        nested: isOwn ? pkg.nested : 0,
+        host_storage_pools: canManagePackage ? ((pkg as any).host_storage_pools || {}) : undefined,
+        host_traffic_multipliers: canManagePackage ? ((pkg as any).host_traffic_multipliers || {}) : undefined,
+        privileged: canManagePackage ? pkg.privileged : 0,
+        nested: canManagePackage ? pkg.nested : 0,
         active: pkg.active,
         monthly_traffic_limit: pkg.monthly_traffic_limit,
         port_limit: pkg.port_limit,
@@ -1007,9 +1156,9 @@ export default async function packageRoutes(fastify: FastifyInstance) {
         boot_autostart_delay: pkg.boot_autostart_delay,
         boot_host_shutdown_timeout: pkg.boot_host_shutdown_timeout,
         // 全局共享配置（仅套餐所有者查看时返回）
-        global_shared: isOwn ? ((pkg as any).global_shared ?? false) : undefined,
-        global_quota_multiplier: isOwn ? null : undefined,
-        global_max_instances: isOwn
+        global_shared: canManagePackage ? ((pkg as any).global_shared ?? false) : undefined,
+        global_quota_multiplier: canManagePackage ? null : undefined,
+        global_max_instances: canManagePackage
           ? (((pkg as any).global_shared ?? false) ? normalizePublicPackageMaxInstances((pkg as any).global_max_instances) : null)
           : undefined,
         // 实例操作权限（所有用户都需要知道是否可以删除）
@@ -1017,6 +1166,7 @@ export default async function packageRoutes(fastify: FastifyInstance) {
         required_package_id: (pkg as any).required_package_id ?? null,
         required_package_name: (pkg as any).required_package_name ?? null,
         has_required_package_instance: hasRequiredPackageInstance,
+        planSummary,
         ownerId: pkg.user_id,
         isOwn,
         // 剩余配额信息
@@ -1947,29 +2097,38 @@ export default async function packageRoutes(fastify: FastifyInstance) {
     const plans = await db.getPlansByPackageId(packageId, { activeOnly })
 
     return {
-      plans: plans.map(plan => ({
-        id: plan.id,
-        name: plan.name,
-        description: plan.description,
-        cpu: plan.cpu,
-        memory: plan.memory,
-        disk: plan.disk,
-        portLimit: plan.portLimit,
-        snapshotLimit: plan.snapshotLimit,
-        backupLimit: plan.backupLimit,
-        siteLimit: plan.siteLimit,
-        swapSize: pkg.instance_type === 'vm' ? 0 : plan.swapSize,
-        trafficLimit: plan.trafficLimit.toString(),
-        trafficLimitSpeed: plan.trafficLimitSpeed,
-        price: Number(plan.price),
-        billingCycle: plan.billingCycle,
-        setupFee: Number(plan.setupFee),
-        monthlyPrice: db.calculateMonthlyPrice(plan),
-        isActive: plan.isActive,
-        isSoldOut: plan.isSoldOut,
-        sortOrder: plan.sortOrder,
-        slaGuarantee: plan.slaGuarantee ? Number(plan.slaGuarantee) : null
-      }))
+      plans: plans.map(plan => serializePackagePlan(plan, pkg))
+    }
+  })
+
+  // 获取单个套餐方案
+  fastify.get<{ Params: { id: string; planId: string } }>('/:id/plans/:planId', {
+    onRequest: [fastify.authenticate]
+  }, async (request, reply) => {
+    const { id, planId } = request.params
+    const { user } = request
+    const packageId = Number(id)
+    const planIdNum = Number(planId)
+
+    if (isNaN(packageId) || isNaN(planIdNum)) {
+      return reply.code(400).send(apiError(ErrorCode.INVALID_ID))
+    }
+
+    const pkg = await db.getPackageById(packageId)
+    if (!pkg) {
+      return reply.code(404).send(apiError(ErrorCode.PACKAGE_NOT_FOUND))
+    }
+    if (pkg.user_id !== user.id && user.role !== 'admin') {
+      return reply.code(403).send(apiError(ErrorCode.FORBIDDEN))
+    }
+
+    const plan = await db.getPlanById(planIdNum)
+    if (!plan || plan.packageId !== packageId) {
+      return reply.code(404).send({ error: '方案不存在' })
+    }
+
+    return {
+      plan: serializePackagePlan(plan, pkg)
     }
   })
 
@@ -1992,6 +2151,8 @@ export default async function packageRoutes(fastify: FastifyInstance) {
       price: number
       billingCycle?: number
       setupFee?: number
+      trafficResetEnabled?: boolean
+      trafficResetPrice?: number
       isActive?: boolean
       isSoldOut?: boolean
       sortOrder?: number
@@ -2018,7 +2179,7 @@ export default async function packageRoutes(fastify: FastifyInstance) {
       return reply.code(403).send(apiError(ErrorCode.FORBIDDEN))
     }
 
-    const { name, description, cpu, memory, disk, portLimit, snapshotLimit, backupLimit, siteLimit, swapSize, trafficLimit, trafficLimitSpeed, price, billingCycle, isActive, isSoldOut, sortOrder, slaGuarantee } = request.body
+    const { name, description, cpu, memory, disk, portLimit, snapshotLimit, backupLimit, siteLimit, swapSize, trafficLimit, trafficLimitSpeed, price, billingCycle, trafficResetEnabled, trafficResetPrice, isActive, isSoldOut, sortOrder, slaGuarantee } = request.body
     const normalizedSwapSize = pkg.instance_type === 'vm' ? 0 : swapSize
 
     if (isActive !== undefined && typeof isActive !== 'boolean') {
@@ -2026,6 +2187,9 @@ export default async function packageRoutes(fastify: FastifyInstance) {
     }
     if (isSoldOut !== undefined && typeof isSoldOut !== 'boolean') {
       return reply.code(400).send({ error: 'isSoldOut 必须为布尔值' })
+    }
+    if (trafficResetEnabled !== undefined && typeof trafficResetEnabled !== 'boolean') {
+      return reply.code(400).send({ error: 'trafficResetEnabled 必须为布尔值' })
     }
 
     // 验证方案名称：允许 emoji，但仍禁止危险字符
@@ -2057,6 +2221,10 @@ export default async function packageRoutes(fastify: FastifyInstance) {
     const priceError = validatePackagePlanPrice(price)
     if (priceError) {
       return reply.code(400).send({ error: priceError })
+    }
+    const normalizedTrafficResetPrice = normalizeTrafficResetPrice(trafficResetEnabled, trafficResetPrice)
+    if (normalizedTrafficResetPrice.error) {
+      return reply.code(400).send({ error: normalizedTrafficResetPrice.error })
     }
 
     // 验证 SLA 保证值
@@ -2095,6 +2263,8 @@ export default async function packageRoutes(fastify: FastifyInstance) {
         price,
         billingCycle,
         setupFee: 0,  // 开通费固定为0
+        trafficResetEnabled: trafficResetEnabled ?? false,
+        trafficResetPrice: normalizedTrafficResetPrice.value,
         isActive,
         isSoldOut,
         sortOrder,
@@ -2138,6 +2308,8 @@ export default async function packageRoutes(fastify: FastifyInstance) {
       price?: number
       billingCycle?: number
       setupFee?: number
+      trafficResetEnabled?: boolean
+      trafficResetPrice?: number
       isActive?: boolean
       isSoldOut?: boolean
       sortOrder?: number
@@ -2171,7 +2343,7 @@ export default async function packageRoutes(fastify: FastifyInstance) {
       return reply.code(404).send({ error: '方案不存在' })
     }
 
-    const { name, description, cpu, memory, disk, portLimit, snapshotLimit, backupLimit, siteLimit, swapSize, trafficLimit, trafficLimitSpeed, price, billingCycle, isActive, isSoldOut, sortOrder, slaGuarantee } = request.body
+    const { name, description, cpu, memory, disk, portLimit, snapshotLimit, backupLimit, siteLimit, swapSize, trafficLimit, trafficLimitSpeed, price, billingCycle, trafficResetEnabled, trafficResetPrice, isActive, isSoldOut, sortOrder, slaGuarantee } = request.body
     const normalizedSwapSize = pkg.instance_type === 'vm' ? 0 : swapSize
 
     if (isActive !== undefined && typeof isActive !== 'boolean') {
@@ -2179,6 +2351,9 @@ export default async function packageRoutes(fastify: FastifyInstance) {
     }
     if (isSoldOut !== undefined && typeof isSoldOut !== 'boolean') {
       return reply.code(400).send({ error: 'isSoldOut 必须为布尔值' })
+    }
+    if (trafficResetEnabled !== undefined && typeof trafficResetEnabled !== 'boolean') {
+      return reply.code(400).send({ error: 'trafficResetEnabled 必须为布尔值' })
     }
 
     let planName: string | undefined
@@ -2215,6 +2390,14 @@ export default async function packageRoutes(fastify: FastifyInstance) {
       const priceError = validatePackagePlanPrice(price)
       if (priceError) {
         return reply.code(400).send({ error: priceError })
+      }
+    }
+    const nextTrafficResetEnabled = trafficResetEnabled ?? existingPlan.trafficResetEnabled
+    const nextTrafficResetPrice = trafficResetPrice ?? Number(existingPlan.trafficResetPrice)
+    const normalizedTrafficResetPrice = normalizeTrafficResetPrice(nextTrafficResetEnabled, nextTrafficResetPrice)
+    if (trafficResetPrice !== undefined || trafficResetEnabled !== undefined) {
+      if (normalizedTrafficResetPrice.error) {
+        return reply.code(400).send({ error: normalizedTrafficResetPrice.error })
       }
     }
 
@@ -2254,6 +2437,8 @@ export default async function packageRoutes(fastify: FastifyInstance) {
       if (price !== undefined) updateData.price = price
       if (billingCycle !== undefined) updateData.billingCycle = billingCycle
       // setupFee 已废弃，不再接受更新
+      if (trafficResetEnabled !== undefined) updateData.trafficResetEnabled = trafficResetEnabled
+      if (trafficResetPrice !== undefined || trafficResetEnabled !== undefined) updateData.trafficResetPrice = normalizedTrafficResetPrice.value
       if (isActive !== undefined) updateData.isActive = isActive
       if (isSoldOut !== undefined) updateData.isSoldOut = isSoldOut
       if (sortOrder !== undefined) updateData.sortOrder = sortOrder

@@ -2266,9 +2266,11 @@ model PackagePlan {
   trafficLimitSpeed String @default("1Mbit") @map("traffic_limit_speed") // 流量超限后的限速值
 
   // ========== 计费配置 ==========
-  price        Decimal @db.Decimal(10, 2)                             // 价格
-  billingCycle Int     @default(1) @map("billing_cycle")              // 计费周期（月）
-  setupFee     Decimal @default(0) @map("setup_fee") @db.Decimal(10, 2) // 开通费
+  price               Decimal @db.Decimal(10, 2)                                     // 价格
+  billingCycle        Int     @default(1) @map("billing_cycle")                      // 计费周期（月）
+  setupFee            Decimal @default(0) @map("setup_fee") @db.Decimal(10, 2)       // 开通费
+  trafficResetEnabled Boolean @default(false) @map("traffic_reset_enabled")          // 是否允许用户自助重置流量
+  trafficResetPrice   Decimal @default(0) @map("traffic_reset_price") @db.Decimal(10, 2) // 每次重置流量价格（分）
 
   // ========== 状态与排序 ==========
   isActive  Boolean @default(true) @map("is_active") // 是否启用

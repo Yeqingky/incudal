@@ -2,6 +2,8 @@
 import { ref, onMounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useThemeStore } from '@/stores/theme'
+import { useToast } from '@/stores/toast'
+import { translateError } from '@/utils/errorHandler'
 import api from '@/api'
 
 const props = defineProps<{
@@ -10,6 +12,7 @@ const props = defineProps<{
 
 const { t } = useI18n()
 const themeStore = useThemeStore()
+const toast = useToast()
 
 // 流量数据
 interface TrafficData {
@@ -22,6 +25,10 @@ interface TrafficData {
   trafficResetDay: number
   periodStart: string
   periodEnd: string
+  resetAllowed: boolean
+  resetPrice: number
+  resetPriceFormatted: string | null
+  resetDisabledReason: string | null
 }
 
 interface TrafficHistoryItem {
@@ -39,6 +46,8 @@ const trafficHistory = ref<TrafficHistoryItem[]>([])
 const periodInfo = ref<{ periodStart: string; periodEnd: string } | null>(null)
 const loading = ref(true)
 const historyLoading = ref(true)
+const showResetConfirm = ref(false)
+const resetting = ref(false)
 
 onMounted(async () => {
   await Promise.all([loadTrafficData(), loadTrafficHistory()])
@@ -104,6 +113,46 @@ const statusLabel = computed(() => {
       return t('traffic.status.normal')
   }
 })
+
+const canResetTraffic = computed(() => {
+  if (!trafficData.value) return false
+  return trafficData.value.resetAllowed && BigInt(trafficData.value.monthlyUsed || '0') > 0n
+})
+
+function openResetConfirm() {
+  if (!canResetTraffic.value || resetting.value) return
+  showResetConfirm.value = true
+}
+
+async function confirmResetTraffic() {
+  if (!trafficData.value || resetting.value) return
+
+  resetting.value = true
+  try {
+    const result = await api.traffic.resetInstanceTraffic(props.instanceId)
+    if (result.traffic) {
+      trafficData.value = {
+        ...trafficData.value,
+        monthlyUsed: result.traffic.monthlyUsed,
+        monthlyUsedFormatted: result.traffic.monthlyUsedFormatted,
+        trafficStatus: result.traffic.trafficStatus,
+        percentage: result.traffic.percentage,
+        resetAllowed: result.traffic.resetAllowed,
+        resetPrice: result.traffic.resetPrice,
+        resetPriceFormatted: result.traffic.resetPriceFormatted,
+        resetDisabledReason: result.traffic.resetDisabledReason
+      }
+    } else {
+      await loadTrafficData()
+    }
+    showResetConfirm.value = false
+    toast.success(t('traffic.resetSuccess'))
+  } catch (error) {
+    toast.error(translateError(error) || t('traffic.resetFailed'))
+  } finally {
+    resetting.value = false
+  }
+}
 
 // 进度条颜色
 const progressBarClass = computed(() => {
@@ -235,6 +284,35 @@ const xAxisLabels = computed(() => {
               {{ $t('traffic.periodResetHint', { date: trafficData.trafficResetDay }) }}
             </span>
           </div>
+
+          <div
+            v-if="trafficData.resetAllowed"
+            class="mt-4 border-t pt-4"
+            :class="themeStore.isDark ? 'border-gray-800' : 'border-gray-100'"
+          >
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div class="min-w-0">
+                <div class="text-sm font-medium" :class="themeStore.isDark ? 'text-gray-100' : 'text-gray-900'">
+                  {{ $t('traffic.resetTitle') }}
+                </div>
+                <div class="mt-1 text-xs leading-5 text-themed-muted">
+                  {{ $t('traffic.resetPriceInfo', { price: trafficData.resetPriceFormatted || '¥0.00' }) }}
+                </div>
+              </div>
+              <button
+                type="button"
+                class="btn-secondary h-9 w-full sm:w-auto"
+                :disabled="!canResetTraffic || resetting"
+                @click="openResetConfirm"
+              >
+                <span v-if="resetting" class="loading-spinner w-4 h-4"></span>
+                <template v-else>{{ $t('traffic.resetAction') }}</template>
+              </button>
+            </div>
+            <p v-if="!canResetTraffic" class="mt-2 text-xs text-themed-muted">
+              {{ $t('traffic.resetNoUsage') }}
+            </p>
+          </div>
         </div>
       </template>
 
@@ -353,5 +431,61 @@ const xAxisLabels = computed(() => {
         </span>
       </div>
     </div>
+
+    <Teleport to="body">
+      <Transition name="modal">
+        <div v-if="showResetConfirm && trafficData" class="modal-overlay">
+          <div class="modal-backdrop" @click="showResetConfirm = false"></div>
+          <div class="modal-content max-w-md">
+            <div class="modal-header">
+              <div>
+                <h3 class="modal-title">{{ $t('traffic.resetConfirmTitle') }}</h3>
+                <p class="mt-1 text-xs text-themed-muted">{{ $t('traffic.resetConfirmSubtitle') }}</p>
+              </div>
+              <button
+                class="p-1.5 rounded-lg transition-colors"
+                :class="themeStore.isDark ? 'hover:bg-gray-700' : 'hover:bg-gray-100'"
+                @click="showResetConfirm = false"
+              >
+                <svg class="w-5 h-5 text-themed-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div class="modal-body space-y-4">
+              <div
+                class="rounded-lg border p-4"
+                :class="themeStore.isDark ? 'border-gray-700 bg-gray-800/50' : 'border-gray-200 bg-gray-50'"
+              >
+                <div class="flex items-center justify-between gap-3 text-sm">
+                  <span class="text-themed-muted">{{ $t('traffic.resetCurrentUsage') }}</span>
+                  <span class="font-medium" :class="themeStore.isDark ? 'text-gray-100' : 'text-gray-900'">
+                    {{ trafficData.monthlyUsedFormatted }}
+                  </span>
+                </div>
+                <div class="mt-3 flex items-center justify-between gap-3 text-sm">
+                  <span class="text-themed-muted">{{ $t('traffic.resetCost') }}</span>
+                  <span class="font-medium" :class="themeStore.isDark ? 'text-cyan-300' : 'text-cyan-700'">
+                    {{ trafficData.resetPriceFormatted || '¥0.00' }}
+                  </span>
+                </div>
+              </div>
+              <p class="text-sm leading-6 text-themed-secondary">
+                {{ $t('traffic.resetConfirmBody') }}
+              </p>
+            </div>
+            <div class="modal-footer">
+              <button class="btn-secondary" :disabled="resetting" @click="showResetConfirm = false">
+                {{ $t('common.cancel') }}
+              </button>
+              <button class="btn-primary" :disabled="resetting" @click="confirmResetTraffic">
+                <span v-if="resetting" class="loading-spinner w-4 h-4"></span>
+                <template v-else>{{ $t('traffic.resetConfirmAction') }}</template>
+              </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>

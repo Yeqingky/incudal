@@ -43,6 +43,7 @@ import type {
   CreateHostRequest,
   UpdateHostRequest,
   Package,
+  PackagePlan,
   CreatePackageRequest,
   UpdatePackageRequest,
   SshKey,
@@ -1954,31 +1955,11 @@ const api = {
     }> => http.get(`/packages/${packageId}/owner-info`),
 
     // 套餐方案管理
-    getPlans: (packageId: number, options?: { activeOnly?: boolean }): Promise<{
-      plans: Array<{
-        id: number
-        name: string
-        description: string | null
-        cpu: number
-        memory: number
-        disk: number
-        portLimit: number
-        snapshotLimit: number
-        backupLimit: number
-        siteLimit: number
-        swapSize: number
-        trafficLimit: string
-        trafficLimitSpeed: string
-        price: number
-        billingCycle: number
-        setupFee: number
-        monthlyPrice: number
-        isActive: boolean
-        isSoldOut: boolean
-        sortOrder: number
-        slaGuarantee: number | null
-      }>
-    }> => http.get(`/packages/${packageId}/plans`, { params: options }),
+    getPlans: (packageId: number, options?: { activeOnly?: boolean }): Promise<{ plans: PackagePlan[] }> =>
+      http.get(`/packages/${packageId}/plans`, { params: options }),
+
+    getPlan: (packageId: number, planId: number): Promise<{ plan: PackagePlan }> =>
+      http.get(`/packages/${packageId}/plans/${planId}`),
 
     createPlan: (packageId: number, data: {
       name: string
@@ -1996,6 +1977,8 @@ const api = {
       price: number
       billingCycle?: number
       setupFee?: number
+      trafficResetEnabled?: boolean
+      trafficResetPrice?: number
       isActive?: boolean
       isSoldOut?: boolean
       sortOrder?: number
@@ -2019,6 +2002,8 @@ const api = {
       price?: number
       billingCycle?: number
       setupFee?: number
+      trafficResetEnabled?: boolean
+      trafficResetPrice?: number
       isActive?: boolean
       isSoldOut?: boolean
       sortOrder?: number
@@ -2263,6 +2248,10 @@ const api = {
       trafficResetDay: number
       periodStart: string
       periodEnd: string
+      resetAllowed: boolean
+      resetPrice: number
+      resetPriceFormatted: string | null
+      resetDisabledReason: string | null
     }> => http.get(`/instances/${instanceId}/traffic`),
 
     // 获取实例流量历史
@@ -2285,8 +2274,23 @@ const api = {
     updateInstanceTrafficLimit: (instanceId: number, monthlyLimit: string | null): Promise<{ success: boolean }> =>
       http.put(`/instances/${instanceId}/traffic/limit`, { monthlyLimit }),
 
-    // 重置实例月度流量（宿主机所有者）
-    resetInstanceTraffic: (instanceId: number): Promise<{ success: boolean; message: string }> =>
+    // 重置实例月度流量（管理员/宿主机所有者免费，实例所有者按套餐付费）
+    resetInstanceTraffic: (instanceId: number): Promise<{
+      success: boolean
+      message: string
+      chargedAmount?: number
+      balanceAfter?: number | null
+      traffic?: {
+        monthlyUsed: string
+        monthlyUsedFormatted: string
+        trafficStatus: 'NORMAL' | 'WARNING' | 'LIMITED'
+        percentage: number
+        resetAllowed: boolean
+        resetPrice: number
+        resetPriceFormatted: string | null
+        resetDisabledReason: string | null
+      } | null
+    }> =>
       http.post(`/instances/${instanceId}/traffic/reset`),
 
     // 手动触发流量采集（管理员）

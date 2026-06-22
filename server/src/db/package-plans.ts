@@ -96,6 +96,8 @@ export interface CreatePlanInput {
   price: number
   billingCycle?: number
   setupFee?: number
+  trafficResetEnabled?: boolean
+  trafficResetPrice?: number
   isActive?: boolean
   isSoldOut?: boolean
   sortOrder?: number
@@ -123,6 +125,8 @@ export async function createPlan(input: CreatePlanInput): Promise<PackagePlan> {
     price,
     billingCycle = 1,
     setupFee = 0,
+    trafficResetEnabled = false,
+    trafficResetPrice = 0,
     isActive = true,
     isSoldOut = false,
     sortOrder = 0,
@@ -147,6 +151,8 @@ export async function createPlan(input: CreatePlanInput): Promise<PackagePlan> {
       price,
       billingCycle,
       setupFee,
+      trafficResetEnabled,
+      trafficResetPrice,
       isActive,
       isSoldOut,
       sortOrder,
@@ -173,6 +179,8 @@ export interface UpdatePlanInput {
   price?: number
   billingCycle?: number
   setupFee?: number
+  trafficResetEnabled?: boolean
+  trafficResetPrice?: number
   isActive?: boolean
   isSoldOut?: boolean
   sortOrder?: number
