@@ -561,6 +561,56 @@ async function cleanOldPaymentCallbacks(): Promise<void> {
   }
 }
 
+/**
+ * 清理过期的临时数据（验证码、Token 失效记录、Agent Nonce 等）
+ * 每天凌晨 5:00 执行，防止临时表无限增长
+ */
+async function cleanExpiredTemporaryData(): Promise<void> {
+  console.log('[Billing] Starting expired temporary data cleanup...')
+  const startTime = Date.now()
+  const now = new Date()
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+
+  try {
+    // 并行执行各表清理
+    const [emailCodes, opVerifications, agentNonces, tokenInvalidations] = await Promise.all([
+      // 清理过期的邮箱验证码
+      prisma.emailVerificationCode.deleteMany({
+        where: { expiresAt: { lt: now } }
+      }),
+      // 清理已过期的操作验证码（保留 7 天已验证的记录用于审计）
+      prisma.operationVerification.deleteMany({
+        where: {
+          OR: [
+            { expiresAt: { lt: now } },
+            { verified: true, createdAt: { lt: sevenDaysAgo } }
+          ]
+        }
+      }),
+      // 清理过期的 Agent Nonce（防重放）
+      prisma.hostAgentNonce.deleteMany({
+        where: { expiresAt: { lt: now } }
+      }),
+      // 清理 30 天前的 Token 失效记录
+      prisma.tokenInvalidation.deleteMany({
+        where: { createdAt: { lt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } }
+      })
+    ])
+
+    const duration = Date.now() - startTime
+    const total = emailCodes.count + opVerifications.count + agentNonces.count + tokenInvalidations.count
+    if (total > 0) {
+      console.log(
+        `[Billing] Cleaned expired temp data in ${duration}ms: ` +
+        `emailCodes=${emailCodes.count}, opVerifications=${opVerifications.count}, ` +
+        `agentNonces=${agentNonces.count}, tokenInvalidations=${tokenInvalidations.count}`
+      )
+    }
+  } catch (error) {
+    console.error('[Billing] Expired temporary data cleanup failed:', error)
+  }
+}
+
 // ==================== 调度器入口 ====================
 
 /**
@@ -597,6 +647,11 @@ export function startBillingScheduler(): void {
     cleanOldPaymentCallbacks().catch(console.error)
   })
 
+  // 每天凌晨 5:00 清理过期的临时数据（验证码、Token 失效、Agent Nonce）
+  schedule('0 5 * * *', () => {
+    cleanExpiredTemporaryData().catch(console.error)
+  })
+
   console.log('[Billing] Scheduler started')
   console.log('[Billing] - Auto-renew: hourly at :00 (24h before expiry, max 3 attempts)')
   console.log('[Billing] - Expiry suspend: every 30 minutes')
@@ -604,6 +659,7 @@ export function startBillingScheduler(): void {
   console.log('[Billing] - Expiry notify (email): hourly at :15 (3 days before, auto-renew instances skipped)')
   console.log('[Billing] - Expired recharge cleanup: hourly at :30')
   console.log('[Billing] - Payment callback cleanup: daily at 04:30')
+  console.log('[Billing] - Temporary data cleanup: daily at 05:00')
 }
 
 /**
@@ -623,5 +679,6 @@ export {
   executeExpiryDelete,
   executeExpiryNotify,
   cleanExpiredRechargeOrders,
-  cleanOldPaymentCallbacks
+  cleanOldPaymentCallbacks,
+  cleanExpiredTemporaryData
 }

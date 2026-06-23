@@ -10,6 +10,7 @@ import { apiError, ErrorCode } from '../lib/errors.js'
 import { testNotificationChannel } from '../lib/notifier.js'
 import type { NotificationChannel } from '../types/database.js'
 import { assertSafeWebhookUrl, OutboundTargetValidationError } from '../lib/outbound-security.js'
+import { parseJsonObject } from '../lib/json-validation.js'
 
 export default async function notificationRoutes(fastify: FastifyInstance) {
   async function validateOutboundConfig(
@@ -71,9 +72,7 @@ export default async function notificationRoutes(fastify: FastifyInstance) {
       return reply.code(403).send(apiError(ErrorCode.FORBIDDEN))
     }
 
-    const config = typeof channel.config === 'string'
-      ? JSON.parse(channel.config)
-      : channel.config
+    const config = parseJsonObject(channel.config)
 
     return {
       channel: {
@@ -346,7 +345,7 @@ export default async function notificationRoutes(fastify: FastifyInstance) {
     })
     return {
       channels: channels.map(c => {
-        const config = typeof c.config === 'string' ? JSON.parse(c.config) : c.config as Record<string, unknown>
+        const config = parseJsonObject(c.config)
         return {
           id: c.id,
           name: c.name,
@@ -401,32 +400,28 @@ function validateConfig(
  * 获取配置预览（隐藏敏感信息）
  */
 function getConfigPreview(type: string, configStr: string | Record<string, unknown>): string {
-  try {
-    const config = typeof configStr === 'string' ? JSON.parse(configStr) : configStr as Record<string, unknown>
+  const config = parseJsonObject(configStr)
 
-    switch (type) {
-      case 'telegram':
-        return `Chat ID: ${config.chatId || 'Not set'}`
-      case 'discord':
-        return typeof config.webhookUrl === 'string' && config.webhookUrl
-          ? `Webhook: ...${config.webhookUrl.slice(-20)}`
-          : 'Not set'
-      case 'webhook':
-        if (typeof config.url === 'string' && config.url) {
-          try {
-            return `URL: ${new URL(config.url).hostname}`
-          } catch {
-            return 'URL: Invalid'
-          }
+  switch (type) {
+    case 'telegram':
+      return `Chat ID: ${config.chatId || 'Not set'}`
+    case 'discord':
+      return typeof config.webhookUrl === 'string' && config.webhookUrl
+        ? `Webhook: ...${config.webhookUrl.slice(-20)}`
+        : 'Not set'
+    case 'webhook':
+      if (typeof config.url === 'string' && config.url) {
+        try {
+          return `URL: ${new URL(config.url).hostname}`
+        } catch {
+          return 'URL: Invalid'
         }
-        return 'Not set'
-      case 'email':
-        return typeof config.email === 'string' ? config.email : 'Not set'
-      default:
-        return 'Unknown type'
-    }
-  } catch {
-    return 'Config error'
+      }
+      return 'Not set'
+    case 'email':
+      return typeof config.email === 'string' ? config.email : 'Not set'
+    default:
+      return 'Unknown type'
   }
 }
 

@@ -23,6 +23,7 @@ import { listStoragePools, getStoragePoolResources, createStoragePool, deleteSto
 import type { CreateHostRequest, UpdateHostRequest } from '../types/api.js'
 import type { Host } from '../types/database.js'
 import { validateName, validateUrl, validateIpAddress, validateIdentifier, validateIpOrDomain, encryptSensitiveData } from '../lib/security.js'
+import { parseStringArray } from '../lib/json-validation.js'
 import { sendNotification } from '../lib/notifier.js'
 import { sendReleaseNotification } from '../lib/release-notifier.js'
 import { createCaddyClient } from '../lib/caddy-client.js'
@@ -556,7 +557,7 @@ export default async function hostRoutes(fastify: FastifyInstance) {
         location: host.location,
         countryCode: host.country_code || 'us',
         architecture: host.architecture || 'x86_64',
-        tags: typeof host.tags === 'string' ? JSON.parse(host.tags || '[]') : (host.tags || []),
+        tags: parseStringArray(host.tags),
         // certPath and keyPath are sensitive - removed from response
         resources: {
           cpuUsed: host.cpu_used,

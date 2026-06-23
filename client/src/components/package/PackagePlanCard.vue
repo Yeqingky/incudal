@@ -118,22 +118,7 @@ function emitStatus(status: PlanStatus): void {
           <div class="text-2xl font-semibold tracking-normal text-themed">¥{{ formatPrice(plan.price) }}</div>
           <div class="text-xs text-themed-muted">{{ getBillingCycleLabel(plan.billingCycle) }}</div>
         </div>
-        <div class="flex shrink-0 items-center gap-2">
-          <button
-            type="button"
-            class="btn-secondary btn-sm"
-            @click="emit('edit', plan)"
-          >
-            {{ t('common.edit') }}
-          </button>
-          <button
-            type="button"
-            class="btn-ghost btn-sm text-error"
-            @click="emit('delete', plan)"
-          >
-            {{ t('common.delete') }}
-          </button>
-        </div>
+
       </div>
     </div>
 
@@ -157,7 +142,7 @@ function emitStatus(status: PlanStatus): void {
         <div class="text-xs text-themed-muted">{{ t('resources.plans.trafficReset') }}</div>
         <div class="mt-1 text-sm font-medium text-themed">
           <template v-if="plan.trafficResetEnabled">¥{{ formatPrice(plan.trafficResetPrice || 0) }}/{{ t('resources.plans.perReset') }}</template>
-          <template v-else>-</template>
+<template v-else>{{ t('resources.plans.trafficResetDisabled') }}</template>
         </div>
         <div class="text-xs text-themed-muted">
           {{ t('resources.plans.slaGuarantee') }} {{ plan.slaGuarantee ?? '-' }}%
@@ -170,9 +155,7 @@ function emitStatus(status: PlanStatus): void {
       <span>{{ t('resources.plans.sortOrder') }} {{ plan.sortOrder }}</span>
     </div>
 
-    <div class="mt-4 flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between" :class="themeStore.isDark ? 'border-gray-800' : 'border-gray-100'">
-      <div class="text-xs text-themed-muted">{{ t('resources.plans.status') }}</div>
-
+    <div class="mt-4 flex flex-wrap items-center justify-between gap-3 border-t pt-4" :class="themeStore.isDark ? 'border-gray-800' : 'border-gray-100'">
       <div class="inline-grid grid-cols-3 rounded-lg border p-0.5 text-xs" :class="themeStore.isDark ? 'border-gray-800 bg-gray-950' : 'border-gray-200 bg-white'">
         <button
           v-for="option in statusOptions"
@@ -184,6 +167,23 @@ function emitStatus(status: PlanStatus): void {
           @click="emitStatus(option.value)"
         >
           {{ option.label }}
+        </button>
+      </div>
+
+      <div class="flex shrink-0 items-center gap-2">
+        <button
+          type="button"
+          class="btn-secondary btn-sm"
+          @click="emit('edit', plan)"
+        >
+          {{ t('common.edit') }}
+        </button>
+        <button
+          type="button"
+          class="btn-ghost btn-sm text-error"
+          @click="emit('delete', plan)"
+        >
+          {{ t('common.delete') }}
         </button>
       </div>
     </div>

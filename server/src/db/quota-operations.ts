@@ -82,6 +82,7 @@ export async function incrementUserQuotaUsed(userId: number, data: {
 
 /**
  * 减少用户配额使用量
+ * 安全改进：使用条件更新，既防止出现负数，也避免并发扣减丢失
  */
 export async function decrementUserQuotaUsed(userId: number, type: 'host' | 'friend' | 'package'): Promise<void> {
   // 注意：不再限制实例配额，不再更新 instanceUsed
@@ -90,21 +91,25 @@ export async function decrementUserQuotaUsed(userId: number, type: 'host' | 'fri
     friendUsed?: { decrement: number }
     packageUsed?: { decrement: number }
   } = {}
+  const where: Prisma.UserQuotaWhereInput = { userId }
 
   switch (type) {
     case 'host':
       updateData.hostUsed = { decrement: 1 }
+      where.hostUsed = { gt: 0 }
       break
     case 'friend':
       updateData.friendUsed = { decrement: 1 }
+      where.friendUsed = { gt: 0 }
       break
     case 'package':
       updateData.packageUsed = { decrement: 1 }
+      where.packageUsed = { gt: 0 }
       break
   }
 
-  await prisma.userQuota.update({
-    where: { userId },
+  await prisma.userQuota.updateMany({
+    where,
     data: updateData
   })
 }

@@ -1034,6 +1034,7 @@ model Instance {
   @@index([status])
   @@index([hostId, status]) // 高可用优化：状态同步调度器使用
   @@index([expiresAt])      // 计费调度器使用：查找即将到期的实例
+  @@index([autoRenew, expiresAt]) // 计费调度器使用：自动续费查询
   @@index([userId, displayOrder, createdAt(sort: Desc)])
   @@map("instances")
 }
@@ -1413,6 +1414,7 @@ model Log {
   @@index([instanceId])
   @@index([module])
   @@index([createdAt])
+  @@index([userId, createdAt(sort: Desc)]) // 用户操作日志时间线查询
   @@map("logs")
 }
 
@@ -1558,6 +1560,7 @@ model EmailVerificationCode {
 
   @@index([email, code])
   @@index([expiresAt])
+  @@index([email, createdAt(sort: Desc)]) // 邮箱验证历史查询
   @@map("email_verification_codes")
 }
 
@@ -1660,6 +1663,7 @@ model OperationVerification {
 
   @@index([userId, operationType, code])
   @@index([expiresAt])
+  @@index([userId, verified]) // 清理已验证/已过期的验证码
   @@map("operation_verifications")
 }
 
@@ -1760,6 +1764,7 @@ model InboxMessage {
 
   @@index([userId, isRead])
   @@index([userId, createdAt(sort: Desc)])
+  @@index([createdAt]) // 定期清理旧站内信
   @@map("inbox_messages")
 }
 
@@ -2083,6 +2088,7 @@ model BalanceLog {
 
   @@index([userId, createdAt(sort: Desc)])
   @@index([type])
+  @@index([orderId]) // 充值订单关联查询
   @@map("balance_logs")
 }
 
@@ -2164,6 +2170,7 @@ model RechargeRecord {
   @@index([status, createdAt])
   @@index([orderNo])
   @@index([tradeNo])
+  @@index([status, expiredAt]) // 计费调度器使用：清理过期订单
   @@map("recharge_records")
 }
 
@@ -2391,11 +2398,12 @@ model AffLog {
   remark               String?
   createdAt            DateTime   @default(now()) @map("created_at")
 
-  user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   affCode          AffCode?          @relation(fields: [affCodeId], references: [id], onDelete: SetNull)
   mailSubscription MailSubscription? @relation(fields: [mailSubscriptionId], references: [id], onDelete: SetNull)
 
   @@index([userId, createdAt(sort: Desc)])
+  @@index([userId, type, createdAt(sort: Desc)]) // AFF 收益明细查询
   @@index([affCodeId])
   @@index([mailSubscriptionId])
   @@map("aff_logs")

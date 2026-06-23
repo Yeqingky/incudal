@@ -980,13 +980,18 @@ const ENCRYPTION_CONFIG = {
  * 获取加密密钥
  */
 function getEncryptionKey(): Buffer {
-    const secret = process.env.ENCRYPTION_KEY ||
-        (process.env.NODE_ENV === 'production' ? '' : process.env.JWT_SECRET || 'default-encryption-key')
-    if (!secret) {
+    if (process.env.ENCRYPTION_KEY) {
+        return crypto.createHash('sha256').update(process.env.ENCRYPTION_KEY).digest()
+    }
+    if (process.env.NODE_ENV === 'production') {
         throw new Error('ENCRYPTION_KEY is required in production')
     }
-    // 使用 SHA-256 确保密钥长度为 32 字节
-    return crypto.createHash('sha256').update(secret).digest()
+    // Development fallback
+    const fallback = process.env.JWT_SECRET || 'default-encryption-key'
+    if (!process.env.JWT_SECRET) {
+        console.warn('⚠️  ENCRYPTION_KEY not set, using insecure development fallback')
+    }
+    return crypto.createHash('sha256').update(fallback).digest()
 }
 
 /**

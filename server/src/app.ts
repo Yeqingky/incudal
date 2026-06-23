@@ -270,8 +270,12 @@ await fastify.register(helmet, {
   crossOriginEmbedderPolicy: false,
   // 跨域资源策略
   crossOriginResourcePolicy: { policy: 'cross-origin' },
-  // HSTS - 纯 HTTP 部署需禁用
-  hsts: false,
+  // HSTS - 通过 ENABLE_HSTS 环境变量控制，默认禁用（兼容 HTTP 部署）
+  // HTTPS 部署建议设置 ENABLE_HSTS=true 启用
+  hsts: process.env.ENABLE_HSTS === 'true' ? {
+    maxAge: 31536000,
+    includeSubDomains: true,
+  } : false,
   // 禁止 MIME 类型嗅探
   noSniff: true,
   // 防止点击劫持
@@ -284,12 +288,28 @@ await fastify.register(helmet, {
   referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
 })
 
+const jwtSecret = process.env.JWT_SECRET
+if (!jwtSecret) {
+  if (process.env.NODE_ENV === 'production') {
+    console.error('❌ 安全配置错误: JWT_SECRET is required in production')
+    process.exit(1)
+  }
+  console.warn('⚠️  JWT_SECRET not set, using insecure development fallback')
+}
 await fastify.register(fastifyJwt, {
-  secret: process.env.JWT_SECRET || 'dev-secret-change-in-production'
+  secret: jwtSecret || 'dev-secret-change-in-production'
 })
 
+const cookieSecret = process.env.COOKIE_SECRET
+if (!cookieSecret) {
+  if (process.env.NODE_ENV === 'production') {
+    console.error('❌ 安全配置错误: COOKIE_SECRET is required in production')
+    process.exit(1)
+  }
+  console.warn('⚠️  COOKIE_SECRET not set, using insecure development fallback')
+}
 await fastify.register(fastifyCookie, {
-  secret: process.env.COOKIE_SECRET || 'cookie-secret-change-in-production',
+  secret: cookieSecret || 'cookie-secret-change-in-production',
   parseOptions: {}
 })
 

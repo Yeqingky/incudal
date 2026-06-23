@@ -2,13 +2,17 @@
 
 <p align="center">基于 Incus 的 LXC / KVM NAT VPS 销售、交付与管理面板。</p>
 
+> Incudal 是基于 BSD 3-Clause 协议的开源项目。在遵守该协议各项条款的前提下，任何人均可自由使用、修改和分发本项目代码。
+> 
+> **特此声明：**
+> * **免责与无支持：** 本项目依“现状（As-is）”提供。除官方文档外，Incudal 不为任何用户提供额外的技术指导与帮助，不对使用产生的任何后果承担责任。
+> * **禁止背书与推广：** Incudal 不对任何基于本项目的衍生程序或开源仓库提供背书。请勿使用 Incudal 的名称来认可或推广任何衍生产品。
+
 ## 项目简介
 
-Incudal 基于 Incus 的 NAT VPS 销售与管理面板。
+Incudal - 基于 Incus 的 NAT VPS 销售与管理面板。
 项目支持 LXC / KVM 实例、套餐与镜像管理、账务计费、节点托管、用户后台、管理员后台以及宿主机 Agent。
-
-> 演示站：https://demo.incudal.com | <a href="https://t.me/incudal_group">交流群聊</a><br/>
-> <strong>仅供学习与参考，本项目存在诸多不完善之处。有任何问题建议 Fork 后使用 AI 解决。</strong><br/>
+演示站：https://demo.incudal.com | <a href="https://t.me/incudal_group">交流群聊</a>
 
 ## 主要功能
 

@@ -8,10 +8,23 @@ import { Prisma, type BalanceLog, type BalanceLogType } from '@prisma/client'
 
 type BalanceQueryClient = typeof prisma | Prisma.TransactionClient
 
+// 余额事务使用 Serializable 隔离级别，防止并发读写导致余额不一致
+const BALANCE_TRANSACTION_OPTIONS = {
+  isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+  timeout: 10000,
+} as const
+
 function toNumber(value: unknown): number {
   if (value === null || value === undefined) return 0
   const numberValue = Number(value)
   return Number.isFinite(numberValue) ? numberValue : 0
+}
+
+/**
+ * 四舍五入到分（两位小数），避免浮点精度问题
+ */
+function roundMoney(value: number): number {
+  return Math.round(value * 100) / 100
 }
 
 // ==================== 余额查询 ====================
@@ -131,7 +144,7 @@ export async function changeBalance(
 
   try {
     const result = await prisma.$transaction(async (tx) => {
-      // 1. 获取当前余额（加锁）
+      // 1. 获取当前余额（Serializable 隔离保证读取的值不会被其他事务修改）
       const user = await tx.user.findUnique({
         where: { id: userId },
         select: { balance: true }
@@ -142,7 +155,7 @@ export async function changeBalance(
       }
 
       const balanceBefore = Number(user.balance)
-      const balanceAfter = balanceBefore + amount
+      const balanceAfter = roundMoney(balanceBefore + amount)
 
       // 2. 检查余额是否足够（如果是扣款）
       if (amount < 0 && balanceAfter < 0) {
@@ -170,7 +183,7 @@ export async function changeBalance(
       })
 
       return { balanceLog, newBalance: balanceAfter }
-    })
+    }, BALANCE_TRANSACTION_OPTIONS)
 
     return {
       success: true,

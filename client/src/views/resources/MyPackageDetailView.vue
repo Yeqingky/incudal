@@ -36,12 +36,12 @@ const isAdmin = computed(() => authStore.user?.role === 'admin')
 const canManagePackage = computed(() => Boolean(pkg.value && (isAdmin.value || pkg.value.isOwn === true || pkg.value.ownerId === authStore.user?.id)))
 
 const statusInfo = computed(() => {
-  if (!pkg.value) return { label: '', class: '', dot: '' }
+  if (!pkg.value) return { label: '', class: '' }
   const activeValue = pkg.value.active as unknown
   const active = activeValue === 1 || activeValue === true
   return active
-    ? { label: t('admin.packages.active'), class: 'badge-success', dot: 'bg-green-500' }
-    : { label: t('admin.packages.inactive'), class: 'badge-default', dot: 'bg-gray-500' }
+    ? { label: t('admin.packages.active'), class: 'badge-success' }
+    : { label: t('admin.packages.inactive'), class: 'badge-default' }
 })
 
 const hasPaidPlans = computed(() => (pkg.value?.planSummary?.total || 0) > 0)
@@ -281,7 +281,6 @@ async function deletePackage(): Promise<void> {
           </RouterLink>
           <div class="min-w-0">
             <div class="flex flex-wrap items-center gap-3">
-              <div :class="['w-2.5 h-2.5 rounded-full shrink-0', statusInfo.dot]"></div>
               <h1 class="page-title truncate">{{ pkg.name }}</h1>
               <span :class="['badge', statusInfo.class]">{{ statusInfo.label }}</span>
               <span

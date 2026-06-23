@@ -1,4 +1,5 @@
 import { marked, Renderer } from 'marked'
+import DOMPurify from 'dompurify'
 
 // 自定义 Alert 颜色配置
 const alertColors: Record<string, { bg: string; bgLight: string; border: string; text: string; textLight: string; icon: string }> = {
@@ -173,10 +174,20 @@ function configureMarked(): void {
 // 初始化配置
 configureMarked()
 
+// DOMPurify 白名单配置：保留自定义渲染器输出的安全标签和属性
+// - figure/figcaption: 自定义图片渲染器使用
+// - target: 外部链接 target="_blank" 需要
+// - loading: 图片 loading="lazy" 需要
+// - class/href/src/alt/title: DOMPurify 默认允许，无需显式添加
+const PURIFY_CONFIG = {
+  ADD_TAGS: ['figure', 'figcaption'],
+  ADD_ATTR: ['target', 'loading'],
+}
+
 /**
  * 解析 Markdown 内容为 HTML
  * @param content Markdown 内容
- * @returns 解析后的 HTML
+ * @returns 净化后的 HTML
  */
 export function parseMarkdown(content: string): string {
   if (!content) return ''
@@ -185,7 +196,10 @@ export function parseMarkdown(content: string): string {
   const processedContent = parseCustomAlerts(content)
 
   // 使用 marked 解析
-  return marked(processedContent) as string
+  const rawHtml = marked(processedContent) as string
+
+  // DOMPurify 净化，防止 XSS 攻击
+  return DOMPurify.sanitize(rawHtml, PURIFY_CONFIG)
 }
 
 /**

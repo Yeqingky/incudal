@@ -327,7 +327,6 @@ function closeAndGoBack() {
                   </div>
                   <p class="text-xs text-themed-muted mt-1">{{ t('resources.hosts.nameHint') }}</p>
                 </template>
-                <p class="text-xs text-orange-500 dark:text-orange-400 mt-1">{{ t('common.noIncudalHint') }}</p>
               </div>
               <div>
                 <label class="block text-xs text-themed-muted mb-1.5">{{ t('admin.hosts.hostDesc') }}</label>

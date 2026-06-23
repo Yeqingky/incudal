@@ -89,11 +89,10 @@ async function createDefaultAdmin() {
       }
     })
 
-    // 如果使用环境变量配置的密码，不直接输出密码（安全考虑）
-    const passwordDisplay = adminPassword === 'admin123'
-      ? 'admin123'
-      : '***（已从环境变量配置）'
-    console.log(`✅ 默认管理员账户已创建: admin / ${passwordDisplay}`)
+    console.log('✅ 默认管理员账户已创建: admin / ********')
+    if (adminPassword === 'admin123') {
+      console.log('⚠️  正在使用默认密码，请尽快通过 ADMIN_PASSWORD 环境变量修改！')
+    }
     console.log('   配额配置: 宿主机=1000, 好友=1000, 套餐=1000（实例无限制）')
   } else {
     // 如果管理员已存在，检查并更新配额（如果配额不存在或需要更新）

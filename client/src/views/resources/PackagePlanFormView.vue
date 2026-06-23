@@ -331,7 +331,7 @@ async function savePlan(): Promise<void> {
                 <input v-model="planForm.description" type="text" class="input" :placeholder="t('resources.plans.descriptionPlaceholder')" />
               </div>
             </div>
-            <p class="mt-3 text-xs text-orange-500 dark:text-orange-400">{{ t('common.noIncudalHint') }}</p>
+
           </section>
 
           <section class="card p-5">

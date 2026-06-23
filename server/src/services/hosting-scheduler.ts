@@ -127,8 +127,14 @@ export function startHostingScheduler(): void {
     timezone: 'Asia/Shanghai'
   })
 
+  // 启动后延迟 5 秒执行一次解冻，防止停机期间遗漏的解冻任务
+  setTimeout(() => {
+    console.log('[Hosting] Running initial unfreeze on startup...')
+    unfreezeHostingBalance().catch(console.error)
+  }, 5000)
+
   console.log('[Hosting] Hosting scheduler started')
-  console.log('[Hosting] - Unfreeze: Every hour at minute 0')
+  console.log('[Hosting] - Unfreeze: Every hour at minute 0 (+ startup catch-up)')
 }
 
 /**
