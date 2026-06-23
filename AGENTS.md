@@ -15,6 +15,8 @@ The repository contains:
 - `server/templates/`: install scripts, emails, and generated templates.
 - `.github/workflows/`: CI, Docker image, release, and agent release workflows.
 - `scripts/`: local setup and verification scripts.
+- `client/scripts/`: frontend-side test and helper scripts.
+- `server/scripts/`: backend-side test and helper scripts.
 
 ## General Rules
 
@@ -70,6 +72,7 @@ pnpm --filter server build
 pnpm --filter server exec prisma generate
 pnpm --filter server exec prisma migrate dev
 pnpm --filter server exec prisma migrate deploy
+pnpm --filter server exec tsx scripts/test-admin-create-user.ts
 ```
 
 Local CI helpers:
@@ -115,6 +118,8 @@ When adding frontend behavior:
 - Database access helpers live under `server/src/db/`.
 - Cross-cutting services live under `server/src/services/`.
 - Shared validation/security/error helpers live under `server/src/lib/`.
+- Admin user creation logic lives in `server/src/lib/admin-create-user.ts`.
+- JSON input validation utilities live in `server/src/lib/json-validation.ts`.
 - Prisma schema and migrations live under `server/prisma/`.
 
 When adding backend behavior:
