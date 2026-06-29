@@ -63,6 +63,13 @@ export const rateLimitRules: RateLimitRule[] = [
         description: '注册接口 - 防止批量注册'
     },
     {
+        path: '/api/auth/send-verification-code',
+        method: 'POST',
+        max: 5,
+        timeWindow: '1 hour',
+        description: '发送注册邮箱验证码 - 防止滥用邮件发送'
+    },
+    {
         path: '/api/auth/refresh',
         method: 'POST',
         max: 10,
@@ -105,6 +112,13 @@ export const rateLimitRules: RateLimitRule[] = [
         max: 60,
         timeWindow: '1 minute',
         description: '获取实例列表'
+    },
+    {
+        path: '/api/instances/dashboard-summary',
+        method: 'GET',
+        max: 30,
+        timeWindow: '1 minute',
+        description: 'Dashboard 统计摘要'
     },
     {
         path: '/api/instances/*/start',

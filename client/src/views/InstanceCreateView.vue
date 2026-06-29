@@ -23,6 +23,8 @@ import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/stores/toast'
 import { useThemeStore } from '@/stores/theme'
 import { useConfigStore } from '@/stores/config'
+import { storeToRefs } from 'pinia'
+import { useInstanceResourcesStore } from '@/stores/instanceResources'
 import RegionSelector from '@/components/instance/RegionSelector.vue'
 import type { Region } from '@/components/instance/RegionSelector.vue'
 import PackageSelector from '@/components/instance/PackageSelector.vue'
@@ -33,7 +35,7 @@ import ImageSelector from '@/components/instance/ImageSelector.vue'
 import SSHKeySelector from '@/components/instance/SSHKeySelector.vue'
 import InitCommandSelector from '@/components/extensions/InitCommandSelector.vue'
 import UserAvatar from '@/components/UserAvatar.vue'
-import type { Package, UserQuota, SshKey, AvailableHost, CreateInstanceRequest } from '@/types/api'
+import type { Package, UserQuota, AvailableHost, CreateInstanceRequest } from '@/types/api'
 import { normalizePackageSourceQuery, toPackageSourceRequest, type PackageSource } from '@/utils/publicCatalog'
 import { validateName as validateInstanceName } from '@/utils/validation'
 import { translateError } from '@/utils/errorHandler'
@@ -86,6 +88,8 @@ const authStore = useAuthStore()
 const toast = useToast()
 const themeStore = useThemeStore()
 const configStore = useConfigStore()
+const resourcesStore = useInstanceResourcesStore()
+const { sshKeys, hostingZones } = storeToRefs(resourcesStore)
 
 // 右栏滚动容器 ref（选套餐后滚回顶部）
 const rightPanelScrollRef = ref<HTMLElement | null>(null)
@@ -93,7 +97,6 @@ const rightPanelScrollRef = ref<HTMLElement | null>(null)
 // 当前选中的套餐来源
 const packageSource = ref<PackageSource>('official')
 const sourceLoading = ref<boolean>(false)
-const hostingZones = ref<HostingZoneTab[]>([])
 
 // 数据加载状态
 // 地区选择
@@ -103,9 +106,11 @@ const regionsLoading = ref<boolean>(false)
 
 const packages = ref<Package[]>([])
 const userQuota = ref<UserQuota | null>(null)
-const sshKeys = ref<SshKey[]>([])
 const availableHosts = ref<AvailableHost[]>([])
 const availableImages = ref<ImageOption[]>([])
+// System images cache: key = `${hostId}:${instanceType}:${memory <= 128 ? 'low' : 'high'}`, TTL 120s
+const systemImageCache = new Map<string, { images: ImageOption[]; ts: number }>()
+const SYSTEM_IMAGE_TTL = 120_000
 const packagePlans = ref<PackagePlan[]>([])
 const imagesLoading = ref<boolean>(false)
 const hostsLoading = ref<boolean>(false)
@@ -452,44 +457,39 @@ const selectedHostingZone = computed<HostingZoneTab | null>(() => {
 })
 
 onMounted(async (): Promise<void> => {
-  await configStore.loadPublicConfig(true)
+  await configStore.loadPublicConfig()
 
   // 检查 URL 参数（分享链接）
   const packageParam = route.query.package as string | undefined
   const planParam = route.query.plan as string | undefined
   const targetPackageId = packageParam ? Number(packageParam) : null
   const targetPlanId = planParam ? Number(planParam) : null
-  
+
   // 确定初始加载的套餐来源
   const initialSource = normalizePackageSourceQuery(route.query.source, route.query.zoneId)
-  
+  const effectiveInitialSource = getSelectablePackageSource(initialSource)
+  const initialSourceRequest = toPackageSourceRequest(effectiveInitialSource)
+
   try {
-    const [zonesRes, userRes, keysRes] = await Promise.all([
-      configStore.hostingMarketEntryEnabled ? api.packages.getHostingZones() : Promise.resolve({ zones: [] as HostingZoneTab[] }),
+    // 合并为单个 Promise.all：5 个请求全部并行（initialSourceRequest 仅依赖 route.query，不依赖其他请求结果）
+    const [, userRes, , packagesRes, regionsRes] = await Promise.all([
+      configStore.hostingMarketEntryEnabled ? resourcesStore.loadHostingZones() : Promise.resolve(),
       api.users.get(authStore.user!.id),
-      api.sshKeys.list()
-    ])
-    hostingZones.value = configStore.hostingMarketEntryEnabled ? (zonesRes.zones || []) : []
-
-    const effectiveInitialSource = getSelectablePackageSource(initialSource)
-    const initialSourceRequest = toPackageSourceRequest(effectiveInitialSource)
-
-    const [packagesRes, regionsRes] = await Promise.all([
+      resourcesStore.loadSshKeys(),
       api.packages.list(initialSourceRequest),
       api.packages.getRegions(initialSourceRequest)
     ])
-    
+
     packages.value = ((packagesRes as { packages?: Package[] }).packages || []).filter(p => p.active === 1)
     const userData = userRes as { user?: { quota?: UserQuota } }
     userQuota.value = userData.user?.quota || null
-    sshKeys.value = keysRes.keys || []
     regions.value = regionsRes.regions || []
-    
+
     // 如果有 URL 参数指定的来源，更新状态
     if (effectiveInitialSource !== 'official') {
       packageSource.value = effectiveInitialSource as PackageSource
     }
-    
+
     // 处理分享链接参数：自动选择地区和套餐
     if (targetPackageId) {
       // 查找包含该套餐的地区
@@ -497,11 +497,11 @@ onMounted(async (): Promise<void> => {
       if (targetRegion) {
         selectedRegion.value = targetRegion.code
       }
-      
-      // 选择套餐
+
+      // 选择套餐（不阻塞 onMounted，让 UI 先渲染套餐列表）
       const targetPkg = packages.value.find(p => p.id === targetPackageId)
       if (targetPkg) {
-        await selectPackage(targetPkg, targetPlanId)
+        selectPackage(targetPkg, targetPlanId)
       } else {
         // 套餐不存在，提示用户并选择第一个
         toast.warning(t('instance.createPage.sharedPackageNotFound'))
@@ -515,7 +515,7 @@ onMounted(async (): Promise<void> => {
         selectPackage(filteredPackages.value[0])
       }
     }
-    
+
     if (sshKeys.value.length > 0) {
       form.value.sshKeyId = sshKeys.value[0].id
     }
@@ -577,6 +577,19 @@ const isHostedMarketPackage = computed<boolean>(() => {
   return selectedPackage.value?.sourceType === 'market' || selectedPackage.value?.sourceType === 'zone'
 })
 
+const affPromoDisabled = computed<boolean>(() => !configStore.affRebateEnabled || isHostedMarketPackage.value)
+const affPromoDisabledMessage = computed<string>(() => {
+  if (!configStore.affRebateEnabled) return t('aff.promoCodeDisabledByAdmin')
+  if (isHostedMarketPackage.value) {
+    return configStore.freeSiteMode ? freeSiteCopy.createPromoHostedDisabled : t('aff.promoCodeHostedDisabled')
+  }
+  return ''
+})
+const affPromoPlaceholder = computed<string>(() => {
+  if (affPromoDisabledMessage.value) return affPromoDisabledMessage.value
+  return configStore.freeSiteMode ? freeSiteCopy.createPromoPlaceholder : t('aff.promoCodePlaceholder')
+})
+
 // 是否正在切换套餐（用于防止 watch 意外触发 loadAvailableHosts）
 const isSwitchingPackage = ref(false)
 
@@ -612,8 +625,13 @@ async function selectPackage(pkg: Package, preferredPlanId?: number | null): Pro
   availableImages.value = []
   resetPromoCode()          // 重置优惠码状态
   
-  // 先加载套餐方案（这样才能正确判断是否是付费套餐）
-  await loadPackagePlans(pkg.id)
+  // 从列表响应中直接读取 plans（后端已附带），避免额外 API 请求
+  if (pkg.plans) {
+    packagePlans.value = pkg.plans
+  } else {
+    // 降级：后端未附带 plans 时仍走 API
+    await loadPackagePlans(pkg.id)
+  }
 
   if (packagePlans.value.length > 0 && preferredPlanId) {
     const matchedPlan = packagePlans.value.find(plan => plan.id === preferredPlanId)
@@ -647,27 +665,10 @@ async function selectPackage(pkg: Package, preferredPlanId?: number | null): Pro
     rightPanelScrollRef.value.scrollTop = 0
   }
   
-  // 加载套餐详情以获取quotaInfo（仅在套餐信息中还没有quotaInfo时加载）
+  // 非阻塞地加载配额信息（仅在套餐信息中还没有quotaInfo时加载）
   const currentPkg = packages.value.find(p => p.id === pkg.id)
   if (!currentPkg?.quotaInfo) {
-    try {
-      const detailRes = await api.packages.get(pkg.id) as any
-      const detailPkg = detailRes.package || detailRes
-      // 更新packages数组中的套餐信息，包含quotaInfo
-      const index = packages.value.findIndex(p => p.id === pkg.id)
-      if (index !== -1) {
-        packages.value[index] = { 
-          ...packages.value[index], 
-          quotaInfo: detailPkg.quotaInfo || null,
-          required_package_id: detailPkg.required_package_id ?? packages.value[index].required_package_id ?? null,
-          required_package_name: detailPkg.required_package_name ?? packages.value[index].required_package_name ?? null,
-          has_required_package_instance: detailPkg.has_required_package_instance ?? (packages.value[index] as any).has_required_package_instance ?? true
-        }
-      }
-    } catch (err) {
-      // 静默失败，不影响其他功能
-      console.warn('Failed to load package quota info:', err)
-    }
+    loadPackageQuotaInfo(pkg.id)
   }
   
   // 检查套餐是否绑定了宿主机
@@ -684,6 +685,29 @@ async function selectPackage(pkg: Package, preferredPlanId?: number | null): Pro
   }
   
   previousMemoryIsLow = form.value.memory <= 128
+}
+
+/**
+ * 非阻塞地加载套餐配额信息
+ */
+async function loadPackageQuotaInfo(packageId: number): Promise<void> {
+  try {
+    const detailRes = await api.packages.get(packageId) as any
+    const detailPkg = detailRes.package || detailRes
+    const index = packages.value.findIndex(p => p.id === packageId)
+    if (index !== -1) {
+      packages.value[index] = {
+        ...packages.value[index],
+        quotaInfo: detailPkg.quotaInfo || null,
+        required_package_id: detailPkg.required_package_id ?? packages.value[index].required_package_id ?? null,
+        required_package_name: detailPkg.required_package_name ?? packages.value[index].required_package_name ?? null,
+        has_required_package_instance: detailPkg.has_required_package_instance ?? (packages.value[index] as any).has_required_package_instance ?? true
+      }
+    }
+  } catch (err) {
+    // 静默失败，不影响其他功能
+    console.warn('Failed to load package quota info:', err)
+  }
 }
 
 /**
@@ -736,6 +760,11 @@ function resetPromoCode(): void {
  * 验证优惠码
  */
 async function verifyPromoCode(): Promise<void> {
+  if (affPromoDisabled.value) {
+    resetPromoCode()
+    return
+  }
+
   if (!form.value.promoCode.trim() || !form.value.planId) {
     resetPromoCode()
     return
@@ -902,19 +931,39 @@ async function loadAvailableImages(instanceType?: 'container' | 'vm', memory?: n
     return
   }
 
+  // Check cache (keyed by host + instanceType + memory threshold)
+  const cacheKey = `${hostId}:${instanceType || 'unknown'}:${(memory || 0) <= 128 ? 'low' : 'high'}`
+  const cached = systemImageCache.get(cacheKey)
+  if (cached && Date.now() - cached.ts < SYSTEM_IMAGE_TTL) {
+    availableImages.value = cached.images
+    if (cached.images.length > 0) {
+      const currentExists = cached.images.some((img) => img.value === form.value.image)
+      if (!currentExists) {
+        form.value.image = cached.images[0].value
+      }
+    } else {
+      form.value.image = ''
+    }
+    return
+  }
+
   imagesLoading.value = true
   try {
     const res = await api.images.getSystemImages(instanceType, memory, hostId)
-    availableImages.value = (res.images || []).map(img => ({
+    const images = (res.images || []).map(img => ({
       value: img.remoteAlias,
       label: img.name,
       icon: img.icon || getDistroFromName(img.name)
     }))
-    
-    if (availableImages.value.length > 0) {
-      const currentExists = availableImages.value.some((img) => img.value === form.value.image)
+
+    // Cache the result
+    systemImageCache.set(cacheKey, { images, ts: Date.now() })
+
+    availableImages.value = images
+    if (images.length > 0) {
+      const currentExists = images.some((img) => img.value === form.value.image)
       if (!currentExists) {
-        form.value.image = availableImages.value[0].value
+        form.value.image = images[0].value
       }
     } else {
       form.value.image = ''
@@ -955,7 +1004,7 @@ async function handleSubmit(): Promise<void> {
       disk: form.value.disk,
       sshKeyId: form.value.sshKeyId,
       customInitCommandIds: form.value.customInitCommandIds.length > 0 ? form.value.customInitCommandIds : undefined,
-      promoCode: (isPaidPackage.value && promoCodeValid.value && form.value.promoCode.trim()) ? form.value.promoCode.trim() : undefined
+      promoCode: (configStore.affRebateEnabled && isPaidPackage.value && promoCodeValid.value && form.value.promoCode.trim()) ? form.value.promoCode.trim() : undefined
     } as CreateInstanceRequest & { promoCode?: string })
     
     toast.success(t('instance.createPage.createSuccess'))
@@ -1179,12 +1228,13 @@ async function handleSubmit(): Promise<void> {
                   <div>
                     <label class="label text-xs uppercase tracking-wide text-themed-muted mb-2">{{ configStore.freeSiteMode ? freeSiteCopy.createPromoCode : $t('aff.promoCode') }}</label>
                     <div class="relative">
-                      <input v-model="form.promoCode" type="text" class="input w-full pr-10" :placeholder="isHostedMarketPackage ? (configStore.freeSiteMode ? freeSiteCopy.createPromoHostedDisabled : $t('aff.promoCodeHostedDisabled')) : (configStore.freeSiteMode ? freeSiteCopy.createPromoPlaceholder : $t('aff.promoCodePlaceholder'))" :disabled="promoCodeVerifying || isHostedMarketPackage" @blur="verifyPromoCode" @keyup.enter="verifyPromoCode" />
+                      <input v-model="form.promoCode" type="text" class="input w-full pr-10" :placeholder="affPromoPlaceholder" :disabled="promoCodeVerifying || affPromoDisabled" @blur="verifyPromoCode" @keyup.enter="verifyPromoCode" />
                       <div v-if="promoCodeVerifying" class="absolute right-3 top-1/2 -translate-y-1/2"><svg class="w-5 h-5 animate-spin text-themed-muted" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg></div>
                       <div v-else-if="promoCodeValid === true" class="absolute right-3 top-1/2 -translate-y-1/2"><svg class="w-5 h-5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg></div>
                       <div v-else-if="promoCodeValid === false" class="absolute right-3 top-1/2 -translate-y-1/2"><svg class="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg></div>
                     </div>
                     <p v-if="promoCodeValid === true" class="text-xs text-green-500 mt-1.5 flex items-center gap-1"><svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" /></svg>{{ configStore.freeSiteMode ? freeSiteCopy.createPromoValid.replace('{rate}', (promoCodeDiscount * 100).toFixed(0) + '%') : $t('aff.promoCodeValid', { rate: (promoCodeDiscount * 100).toFixed(0) + '%' }) }}</p>
+                    <p v-else-if="affPromoDisabledMessage" class="text-xs text-themed-muted mt-1.5">{{ affPromoDisabledMessage }}</p>
                     <p v-else-if="promoCodeError" class="text-xs text-red-500 mt-1.5">{{ promoCodeError }}</p>
                   </div>
                   <div v-if="promoCodeValid === true" class="p-3 rounded-lg text-sm" :class="themeStore.isDark ? 'bg-blue-900/20 border border-blue-800/30 text-blue-300' : 'bg-blue-50 border border-blue-200 text-blue-700'">

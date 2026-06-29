@@ -1059,6 +1059,78 @@ export async function userHasNormalInstanceForPackage(
   return count > 0
 }
 
+/**
+ * 批量检查用户是否拥有指定套餐的正常实例。
+ * 替代逐包调用 userHasNormalInstanceForPackage 的 N+1 模式。
+ * 返回 Map<packageId, boolean>。
+ */
+export async function userHasNormalInstanceForPackages(
+  userId: number,
+  packageIds: number[]
+): Promise<Map<number, boolean>> {
+  const validPackageIds = Array.from(new Set(
+    packageIds.filter(id => Number.isInteger(id) && id > 0)
+  ))
+
+  if (validPackageIds.length === 0) {
+    return new Map()
+  }
+
+  // 查询 packagePlan 获取 planId -> packageId 映射
+  const plans = await prisma.packagePlan.findMany({
+    where: { packageId: { in: validPackageIds } },
+    select: { id: true, packageId: true }
+  })
+  const planPackageMap = new Map(plans.map(plan => [plan.id, plan.packageId]))
+  const planIds = plans.map(plan => plan.id)
+
+  // 两个并行 groupBy：直接绑定 packageId 的实例 + 仅绑定 packagePlanId 的实例
+  const [directRows, planOnlyRows] = await Promise.all([
+    prisma.instance.groupBy({
+      by: ['packageId'],
+      where: {
+        userId,
+        packageId: { in: validPackageIds },
+        status: { in: NORMAL_PACKAGE_INSTANCE_STATUSES }
+      },
+      _count: { id: true }
+    }),
+    planIds.length > 0
+      ? prisma.instance.groupBy({
+          by: ['packagePlanId'],
+          where: {
+            userId,
+            packageId: null,
+            packagePlanId: { in: planIds },
+            status: { in: NORMAL_PACKAGE_INSTANCE_STATUSES }
+          },
+          _count: { id: true }
+        })
+      : Promise.resolve([] as Array<{ packagePlanId: number; _count: { id: number } }>)
+  ])
+
+  // 合并计数
+  const countMap = new Map<number, number>()
+  for (const row of directRows) {
+    if (row.packageId !== null) {
+      countMap.set(row.packageId, row._count?.id || 0)
+    }
+  }
+  for (const row of planOnlyRows) {
+    if (row.packagePlanId === null) continue
+    const pkgId = planPackageMap.get(row.packagePlanId)
+    if (!pkgId) continue
+    countMap.set(pkgId, (countMap.get(pkgId) || 0) + (row._count?.id || 0))
+  }
+
+  // 转换为 boolean Map
+  const result = new Map<number, boolean>()
+  for (const pkgId of validPackageIds) {
+    result.set(pkgId, (countMap.get(pkgId) || 0) > 0)
+  }
+  return result
+}
+
 export async function getPackagesDependingOnPackage(packageId: number): Promise<Array<{ id: number; name: string }>> {
   return await prisma.package.findMany({
     where: { requiredPackageId: packageId },

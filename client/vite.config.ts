@@ -80,13 +80,30 @@ export default defineConfig(({ mode }) => {
           entryFileNames: 'assets/[hash].js',
           assetFileNames: 'assets/[hash].[ext]',
           // 手动分割代码块，优化缓存和加载
-          manualChunks: {
-            // 核心 Vue 库（基础库，缓存利用率高）
-            'vue-core': ['vue', 'vue-router', 'pinia'],
+          manualChunks(id) {
+            // 终端模拟器（体积较大，独立拆分以便按需加载）
+            if (id.includes('node_modules/@xterm/')) {
+              return 'xterm'
+            }
             // 国际化库
-            'vue-i18n': ['vue-i18n'],
+            if (id.includes('node_modules/vue-i18n') || id.includes('node_modules/@intlify/')) {
+              return 'vue-i18n'
+            }
             // 网络请求库
-            'axios': ['axios'],
+            if (id.includes('node_modules/axios')) {
+              return 'axios'
+            }
+            // 核心 Vue 生态（基础库，缓存利用率高）
+            if (
+              id.includes('node_modules/vue/') ||
+              id.includes('node_modules/@vue/') ||
+              id.includes('node_modules/vue-router/') ||
+              id.includes('node_modules/pinia/') ||
+              id.includes('node_modules/@vuejs/')
+            ) {
+              return 'vue-core'
+            }
+            // 语言包文件由 Vite 自动拆分为独立 chunk（动态 import）
           },
         },
         onwarn(warning, warn) {
@@ -95,12 +112,11 @@ export default defineConfig(({ mode }) => {
           warn(warning)
         }
       },
+      chunkSizeWarningLimit: 600,
       minify: 'terser',
       terserOptions: {
         compress: {
-          // 临时保留 console.error 和 console.warn，方便调试白屏问题
-          drop_console: false,  // 临时禁用，方便调试
-          pure_funcs: ['console.log', 'console.debug', 'console.info'],  // 只移除这些
+          drop_console: true,  // 生产环境移除所有 console 输出
           drop_debugger: true,
         },
       },

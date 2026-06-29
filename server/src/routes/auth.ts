@@ -34,7 +34,8 @@ import {
 } from '../lib/security.js'
 import type { LoginRequest, RegisterRequest } from '../types/api.js'
 import { apiError, ErrorCode } from '../lib/errors.js'
-import { turnstileVerifier } from '../lib/turnstile.js'
+import { strictTurnstileVerifier, turnstileVerifier } from '../lib/turnstile.js'
+import { shouldVerifyTurnstileForRegister } from '../lib/register-turnstile.js'
 import { isSmtpEnabled, sendVerificationEmail, sendLoginAlertEmail, sendPasswordResetEmail, sendFreeSiteRegisterGiftEmail } from '../lib/mailer.js'
 import { createVerificationCode, verifyCode } from '../db/email-verification.js'
 import { validateEmailDomain } from '../lib/email-domain.js'
@@ -53,6 +54,7 @@ import { getUserLoginRecords } from '../db/login-records.js'
 import { closeSessionTerminalSessions, closeUserSessions } from '../lib/terminal-proxy.js'
 import { revokeActionTicketsForSession } from '../lib/action-ticket.js'
 import { getUserHostingFeatureStatus } from '../lib/hosting-access.js'
+import { clearAuthCache } from '../plugins/auth-decorators.js'
 
 interface LoginWith2FARequest extends LoginRequest {
   totpCode?: string
@@ -192,14 +194,9 @@ export default async function authRoutes(fastify: FastifyInstance) {
     }
 
     // 验证密码
-    request.log.debug({
-      passwordLength: password?.length,
-      hashPrefix: user.password_hash?.substring(0, 10),
-      hashLength: user.password_hash?.length
-    }, '[login] 开始验证密码')
+    request.log.debug({ userId: user.id, username: user.username }, '[login] 开始验证密码')
 
     const validPassword = await bcrypt.compare(password, user.password_hash)
-    request.log.debug({ validPassword }, '[login] 密码验证结果')
 
     if (!validPassword) {
       // 使用用户ID进行锁定，确保无论使用用户名还是邮箱登录，都能正确锁定
@@ -301,13 +298,13 @@ export default async function authRoutes(fastify: FastifyInstance) {
     // 提取会话标识（Refresh Token 的前20个字符）
     const sessionId = refreshToken.substring(0, 20)
 
-    // 生成 Access Token (简化版：延长有效期到 7 天)
+    // 生成 Access Token (短期，30分钟有效期)
     const accessToken = fastify.jwt.sign({
       id: user.id,
       username: user.username,
       role: user.role,
       sid: sessionId  // 会话标识，用于会话级别的 token 失效
-    }, { expiresIn: '7d' })
+    }, { expiresIn: '30m' })
 
     // 设置 Refresh Token Cookie (HttpOnly)
     // SEC005: 使用统一的 Cookie 配置
@@ -356,9 +353,9 @@ export default async function authRoutes(fastify: FastifyInstance) {
         isNewIp: loginAlertInfo.isNewIp,
         isNewDevice: loginAlertInfo.isNewDevice
       }).then(() => {
-        console.log(`[Login Alert] Sent login alert email to ${user.email} (newIp: ${loginAlertInfo!.isNewIp}, newDevice: ${loginAlertInfo!.isNewDevice})`)
+        request.log.info({ userId: user.id, newIp: loginAlertInfo!.isNewIp, newDevice: loginAlertInfo!.isNewDevice }, '[Login Alert] Sent login alert email')
       }).catch(err => {
-        console.error('[Login Alert] Failed to send login alert email:', err)
+        request.log.error(err, '[Login Alert] Failed to send login alert email')
       })
 
       // 发送推送通知
@@ -378,7 +375,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
 
   // 发送邮件验证码
   fastify.post<{ Body: { email: string; turnstileToken?: string } }>('/send-verification-code', {
-    preHandler: [turnstileVerifier],
+    preHandler: [strictTurnstileVerifier],
     schema: {
       body: {
         type: 'object',
@@ -391,7 +388,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
     }
   }, async (request: FastifyRequest<{ Body: { email: string; turnstileToken?: string } }>, reply: FastifyReply) => {
     const { email } = request.body
-    console.log('[send-verification-code] Request received for email:', email)
+    request.log.debug('[send-verification-code] Request received')
 
     if (!await ensureRegistrationEnabled(reply)) {
       return
@@ -399,7 +396,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
 
     // Check if email verification is enabled
     const smtpEnabled = await isSmtpEnabled()
-    console.log('[send-verification-code] SMTP enabled:', smtpEnabled)
+    request.log.debug({ smtpEnabled }, '[send-verification-code] SMTP check')
     if (!smtpEnabled) {
       return reply.code(400).send(apiError(ErrorCode.EMAIL_VERIFICATION_DISABLED))
     }
@@ -416,42 +413,41 @@ export default async function authRoutes(fastify: FastifyInstance) {
     }
 
     // Check if email is already registered
-    console.log('[send-verification-code] Checking if email exists...')
+    request.log.debug('[send-verification-code] Checking if email exists')
     const existingUser = await db.findUserByEmail(email)
     if (existingUser) {
       return reply.code(400).send(apiError(ErrorCode.EMAIL_ALREADY_REGISTERED))
     }
 
     // Check email domain whitelist
-    console.log('[send-verification-code] Validating email domain...')
+    request.log.debug('[send-verification-code] Validating email domain')
     const domainValidation = await validateEmailDomain(email)
     if (!domainValidation.valid) {
-      console.log('[send-verification-code] Domain not allowed:', domainValidation.domain)
+      request.log.debug({ domain: domainValidation.domain }, '[send-verification-code] Domain not allowed')
       return reply.code(400).send(apiError(ErrorCode.EMAIL_DOMAIN_NOT_ALLOWED, domainValidation.domain))
     }
 
     // Create verification code
-    console.log('[send-verification-code] Creating verification code...')
+    request.log.debug('[send-verification-code] Creating verification code')
     const result = await createVerificationCode(email)
     if (!result) {
       return reply.code(429).send(apiError(ErrorCode.TOO_MANY_VERIFICATION_REQUESTS))
     }
 
     // Send email
-    console.log('[send-verification-code] Sending email...')
+    request.log.debug('[send-verification-code] Sending email')
     const sendResult = await sendVerificationEmail(email, result.code, 10)
-    console.log('[send-verification-code] Email send result:', sendResult)
+    request.log.debug({ success: sendResult.success }, '[send-verification-code] Email send result')
     if (!sendResult.success) {
       return reply.code(500).send(apiError(ErrorCode.EMAIL_SEND_FAILED))
     }
 
-    console.log('[send-verification-code] Success!')
+    request.log.debug('[send-verification-code] Success')
     return { message: 'Verification code sent', expiresAt: result.expiresAt.toISOString() }
   })
 
   // 用户注册 (支持邀请码可选，支持邮件验证码)
   fastify.post<{ Body: RegisterRequest & { turnstileToken?: string; emailCode?: string } }>('/register', {
-    preHandler: [turnstileVerifier],
     schema: {
       body: {
         type: 'object',
@@ -477,6 +473,14 @@ export default async function authRoutes(fastify: FastifyInstance) {
 
     if (!await ensureRegistrationEnabled(reply)) {
       return
+    }
+
+    const smtpEnabled = await isSmtpEnabled()
+    if (shouldVerifyTurnstileForRegister(smtpEnabled)) {
+      await strictTurnstileVerifier(request, reply)
+      if (reply.sent) {
+        return
+      }
     }
 
     // Validate username (prevent dangerous character injection)
@@ -514,7 +518,6 @@ export default async function authRoutes(fastify: FastifyInstance) {
     }
 
     // Check if email verification is required
-    const smtpEnabled = await isSmtpEnabled()
     if (smtpEnabled) {
       if (!emailCode) {
         return reply.code(400).send(apiError(ErrorCode.EMAIL_CODE_REQUIRED))
@@ -628,13 +631,13 @@ export default async function authRoutes(fastify: FastifyInstance) {
     // 提取会话标识（Refresh Token 的前20个字符）
     const sessionId = refreshToken.substring(0, 20)
 
-    // 生成 Access Token (简化版：延长有效期到 7 天)
+    // 生成 Access Token (短期，30分钟有效期)
     const accessToken = fastify.jwt.sign({
       id: newUser.id,
       username: newUser.username,
       role: newUser.role,
       sid: sessionId  // 会话标识，用于会话级别的 token 失效
-    }, { expiresIn: '7d' })
+    }, { expiresIn: '30m' })
 
     // 设置 Refresh Token Cookie (HttpOnly)
     // SEC005: 使用统一的 Cookie 配置
@@ -724,6 +727,8 @@ export default async function authRoutes(fastify: FastifyInstance) {
       revokeActionTicketsForSession(sessionId)
       closeSessionTerminalSessions(sessionId, 'Session logged out')
     }
+    // 清除认证缓存，确保会话失效立即生效
+    clearAuthCache(request.user.id)
 
     // 清除 Cookie - SEC005: 使用统一配置
     reply.clearCookie('refreshToken', getClearCookieOptions())
@@ -791,13 +796,13 @@ export default async function authRoutes(fastify: FastifyInstance) {
       // 更新会话活跃时间并延长过期时间
       const sessionUpdate = await updateSessionActivity(refreshToken)
 
-      // 生成新的 Access Token，包含会话标识（简化版：7天有效期）
+      // 生成新的 Access Token，包含会话标识（30分钟有效期）
       const newAccessToken = fastify.jwt.sign({
         id: user.id,
         username: user.username,
         role: user.role,
         sid: sessionId
-      }, { expiresIn: '7d' })
+      }, { expiresIn: '30m' })
 
       // 如果会话成功延期，同步更新 Cookie 有效期
       // SEC005: 使用统一的 Cookie 配置
@@ -823,7 +828,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
 
   // 生成邀请码 (管理员)
   fastify.post<{ Body: { expiresInDays?: number; count?: number } }>('/invite', {
-    onRequest: [fastify.authenticate],
+    onRequest: [fastify.authenticateAdmin],
     schema: {
       body: {
         type: 'object',
@@ -833,12 +838,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
         }
       }
     }
-  }, async (request: FastifyRequest<{ Body: { expiresInDays?: number; count?: number } }>, reply: FastifyReply) => {
-    // 检查管理员权限
-    if (request.user.role !== 'admin') {
-      return reply.code(403).send(apiError(ErrorCode.ADMIN_REQUIRED))
-    }
-
+  }, async (request: FastifyRequest<{ Body: { expiresInDays?: number; count?: number } }>, _reply: FastifyReply) => {
     const { expiresInDays, count = 1 } = request.body || {}
 
     let expiresAt: string | null = null
@@ -876,12 +876,8 @@ export default async function authRoutes(fastify: FastifyInstance) {
   fastify.get<{
     Querystring: { page?: string; pageSize?: string; status?: string }
   }>('/invites', {
-    onRequest: [fastify.authenticate]
-  }, async (request: FastifyRequest<{ Querystring: { page?: string; pageSize?: string; status?: string } }>, reply: FastifyReply) => {
-    if (request.user.role !== 'admin') {
-      return reply.code(403).send(apiError(ErrorCode.ADMIN_REQUIRED))
-    }
-
+    onRequest: [fastify.authenticateAdmin]
+  }, async (request: FastifyRequest<{ Querystring: { page?: string; pageSize?: string; status?: string } }>, _reply: FastifyReply) => {
     const page = Math.max(1, parseInt(request.query.page || '1', 10))
     const pageSize = Math.min(100, Math.max(1, parseInt(request.query.pageSize || '20', 10)))
     const status = request.query.status === 'used' || request.query.status === 'unused'
@@ -917,12 +913,8 @@ export default async function authRoutes(fastify: FastifyInstance) {
 
   // 删除邀请码 (管理员)
   fastify.delete<{ Params: { id: string } }>('/invites/:id', {
-    onRequest: [fastify.authenticate]
+    onRequest: [fastify.authenticateAdmin]
   }, async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
-    if (request.user.role !== 'admin') {
-      return reply.code(403).send(apiError(ErrorCode.ADMIN_REQUIRED))
-    }
-
     const { id } = request.params
     const inviteId = Number(id)
 
@@ -1310,6 +1302,8 @@ export default async function authRoutes(fastify: FastifyInstance) {
     await revokeAllUserRefreshTokens(user.id)
     await invalidateUserAccessTokens(user.id)
     closeUserSessions(user.id, 'Password reset')
+    // 清除认证缓存，确保令牌失效立即生效
+    clearAuthCache(user.id)
 
     // 记录安全事件
     await logSecurityEvent(SecurityEventType.SUSPICIOUS_ACTIVITY, user.id, {

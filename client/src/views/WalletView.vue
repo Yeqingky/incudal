@@ -8,6 +8,7 @@ import { useThemeStore } from '@/stores/theme'
 import { useConfigStore } from '@/stores/config'
 import TermsOfServiceModal from '@/components/TermsOfServiceModal.vue'
 import { freeSiteCopy } from '@/utils/freeSiteFun'
+import { translateError } from '@/utils/errorHandler'
 
 const { t } = useI18n()
 const toast = useToast()
@@ -23,6 +24,22 @@ interface WalletMetric {
   label: string
   value: string
   tone: MetricTone
+}
+
+interface BalanceTransferRecipient {
+  id: number
+  username: string
+  avatarStyle: string
+  avatarBadgeId: string | null
+}
+
+interface BalanceTransferPreview {
+  recipient: BalanceTransferRecipient
+  amount: number
+  fee: number
+  totalDeduction: number
+  currentBalance: number
+  balanceAfter: number
 }
 
 // 当前 TAB
@@ -63,6 +80,8 @@ const rechargeLoading = ref(false)
 const providers = ref<any[]>([])
 const selectedProvider = ref<number | null>(null)
 const rechargeAmount = ref(10)
+const rechargeCardNo = ref('')
+const rechargeCardPassword = ref('')
 // 新增：支付方式选择
 const selectedPaymentMethod = ref<string>('')
 // 服务条款勾选
@@ -71,6 +90,16 @@ const showTermsModal = ref(false)
 // 无退款确认
 const agreedToNoRefund = ref(false)
 const agreedToRechargeNotice = ref(false)
+
+// 余额转账弹窗
+const showBalanceTransferModal = ref(false)
+const balanceTransferLoading = ref(false)
+const balanceTransferPreviewLoading = ref(false)
+const recipientLookupLoading = ref(false)
+const transferRecipientUsername = ref('')
+const transferRecipient = ref<BalanceTransferRecipient | null>(null)
+const transferAmount = ref<number>(0)
+const transferPreview = ref<BalanceTransferPreview | null>(null)
 
 // 充值记录
 const rechargeRecords = ref<any[]>([])
@@ -288,6 +317,9 @@ async function loadProviders() {
       selectedProvider.value = providers.value[0].id
       // 自动选中第一个支付方式
       updateDefaultPaymentMethod(providers.value[0])
+    } else {
+      selectedProvider.value = null
+      selectedPaymentMethod.value = ''
     }
   } catch (err: any) {
     toast.error(t('wallet.loadProvidersFailed') + ': ' + err.message)
@@ -296,7 +328,7 @@ async function loadProviders() {
 
 // 更新默认支付方式
 function updateDefaultPaymentMethod(provider: any) {
-  if (provider?.type === 'heleket') {
+  if (provider?.type === 'heleket' || provider?.type === 'recharge_card') {
     selectedPaymentMethod.value = ''
   } else if (provider && provider.methods && provider.methods.length > 0) {
     selectedPaymentMethod.value = provider.methods[0]
@@ -310,6 +342,10 @@ watch(selectedProvider, (newProviderId) => {
   if (newProviderId) {
     const provider = providers.value.find(p => p.id === newProviderId)
     updateDefaultPaymentMethod(provider)
+    if (provider?.type !== 'recharge_card') {
+      rechargeCardNo.value = ''
+      rechargeCardPassword.value = ''
+    }
   }
 })
 
@@ -382,11 +418,102 @@ function switchTab(tab: WalletTab) {
 function openRechargeModal() {
   if (configStore.freeSiteMode) return
   rechargeAmount.value = 10
+  rechargeCardNo.value = ''
+  rechargeCardPassword.value = ''
   agreedToTerms.value = false
   agreedToNoRefund.value = false
   agreedToRechargeNotice.value = false
   loadProviders()
   showRechargeModal.value = true
+}
+
+function resetBalanceTransferForm() {
+  transferRecipientUsername.value = ''
+  transferRecipient.value = null
+  transferAmount.value = 0
+  transferPreview.value = null
+}
+
+function openBalanceTransferModal() {
+  if (!balanceTransferAvailable.value) return
+  resetBalanceTransferForm()
+  showBalanceTransferModal.value = true
+}
+
+async function resolveBalanceTransferRecipient() {
+  const username = transferRecipientUsername.value.trim()
+  if (username.length < 2) {
+    toast.error(t('wallet.balanceTransferUsernameRequired'))
+    return
+  }
+
+  recipientLookupLoading.value = true
+  transferPreview.value = null
+  try {
+    const res = await api.billing.getBalanceTransferRecipient(username)
+    transferRecipient.value = res.recipient
+  } catch (err: any) {
+    transferRecipient.value = null
+    toast.error(t('wallet.balanceTransferRecipientFailed') + ': ' + translateError(err))
+  } finally {
+    recipientLookupLoading.value = false
+  }
+}
+
+async function previewBalanceTransfer() {
+  if (!transferRecipient.value) {
+    toast.error(t('wallet.balanceTransferRecipientRequired'))
+    return
+  }
+  const amount = Number(transferAmount.value)
+  if (!Number.isFinite(amount) || amount < 0.01) {
+    toast.error(t('wallet.invalidAmount'))
+    return
+  }
+
+  balanceTransferPreviewLoading.value = true
+  try {
+    const res = await api.billing.previewBalanceTransfer(transferRecipient.value.id, amount)
+    transferAmount.value = res.preview.amount
+    transferPreview.value = res.preview
+  } catch (err: any) {
+    transferPreview.value = null
+    toast.error(t('wallet.balanceTransferPreviewFailed') + ': ' + translateError(err))
+  } finally {
+    balanceTransferPreviewLoading.value = false
+  }
+}
+
+function resetBalanceTransferRecipient() {
+  transferRecipient.value = null
+  transferPreview.value = null
+}
+
+function resetBalanceTransferPreview() {
+  transferPreview.value = null
+}
+
+async function submitBalanceTransfer() {
+  if (!transferPreview.value) {
+    toast.error(t('wallet.balanceTransferPreviewRequired'))
+    return
+  }
+
+  balanceTransferLoading.value = true
+  try {
+    const res = await api.billing.createBalanceTransfer(transferPreview.value.recipient.id, transferPreview.value.amount)
+    toast.success(`${t('wallet.balanceTransferSuccess')}: ${res.transfer.transferNo}`)
+    showBalanceTransferModal.value = false
+    resetBalanceTransferForm()
+    await loadBalance()
+    if (activeTab.value === 'logs' || logs.value.length > 0) {
+      await loadLogs()
+    }
+  } catch (err: any) {
+    toast.error(t('wallet.balanceTransferFailed') + ': ' + translateError(err))
+  } finally {
+    balanceTransferLoading.value = false
+  }
 }
 
 async function createRechargeOrder() {
@@ -396,6 +523,34 @@ async function createRechargeOrder() {
     toast.error(t('wallet.selectProvider'))
     return
   }
+
+  const provider = providers.value.find(p => p.id === selectedProvider.value)
+  if (provider?.type === 'recharge_card') {
+    if (!rechargeCardNo.value.trim() || !rechargeCardPassword.value.trim()) {
+      toast.error(t('wallet.cardCredentialRequired'))
+      return
+    }
+
+    rechargeLoading.value = true
+    try {
+      await api.billing.redeemRechargeCard(rechargeCardNo.value, rechargeCardPassword.value)
+      toast.success(t('wallet.cardRedeemSuccess'))
+      showRechargeModal.value = false
+      rechargeCardNo.value = ''
+      rechargeCardPassword.value = ''
+      await loadBalance()
+      loadRecords()
+      if (activeTab.value === 'logs') {
+        loadLogs()
+      }
+    } catch (err: any) {
+      toast.error(t('wallet.redeemCardFailed') + ': ' + err.message)
+    } finally {
+      rechargeLoading.value = false
+    }
+    return
+  }
+
   if (rechargeAmount.value <= 0) {
     toast.error(t('wallet.invalidAmount'))
     return
@@ -403,8 +558,6 @@ async function createRechargeOrder() {
 
   rechargeLoading.value = true
   try {
-    // 获取选中的支付方式
-    const provider = providers.value.find(p => p.id === selectedProvider.value)
     let paymentMethod = ''
     if (provider && provider.type !== 'heleket' && provider.methods && provider.methods.length > 0) {
       // 如果用户选择了特定支付方式，使用该方式；否则使用默认第一个
@@ -457,6 +610,9 @@ function getLogTypeName(type: string): string {
     gift: t('wallet.logTypes.gift'),
     transfer_fee: t('wallet.logTypes.transferFee'),
     transfer_refund: t('wallet.logTypes.transferRefund'),
+    balance_transfer_out: t('wallet.logTypes.balanceTransferOut'),
+    balance_transfer_in: t('wallet.logTypes.balanceTransferIn'),
+    balance_transfer_fee: t('wallet.logTypes.balanceTransferFee'),
     hosting_withdraw: t('wallet.logTypes.hostingWithdraw'),
     hosting_deduction: t('wallet.logTypes.hostingDeduction'),
     invite_generate: '生成邀请码'
@@ -562,6 +718,9 @@ function getLogTypeTagClass(type: string): string {
     admin_adjust: 'blue',
     gift: 'violet',
     transfer_refund: 'blue',
+    balance_transfer_in: 'emerald',
+    balance_transfer_out: 'rose',
+    balance_transfer_fee: 'amber',
     consume: 'rose',
     transfer_fee: 'amber',
     hosting_withdraw: 'amber',
@@ -608,8 +767,23 @@ function getWithdrawalStatusTagClass(status: string): string {
 const logsTotalPages = computed(() => Math.ceil(logsTotal.value / logsPageSize.value))
 const recordsTotalPages = computed(() => Math.ceil(recordsTotal.value / recordsPageSize.value))
 const selectedProviderInfo = computed(() => providers.value.find(p => p.id === selectedProvider.value))
+const isRechargeCardProvider = computed(() => selectedProviderInfo.value?.type === 'recharge_card')
+const rechargeSubmitDisabled = computed(() => {
+  if (rechargeLoading.value || !selectedProvider.value) return true
+  if (isRechargeCardProvider.value) {
+    return !rechargeCardNo.value.trim() || !rechargeCardPassword.value.trim()
+  }
+  return rechargeAmount.value <= 0 || !agreedToNoRefund.value || !agreedToRechargeNotice.value || !agreedToTerms.value
+})
+const balanceTransferAvailable = computed(() => !configStore.freeSiteMode && configStore.balanceTransferEnabled)
+const balanceTransferSubmitDisabled = computed(() => balanceTransferLoading.value || !transferPreview.value)
+const balanceTransferAmountInvalid = computed(() => {
+  const amount = Number(transferAmount.value)
+  return !Number.isFinite(amount) || amount < 0.01
+})
+
 function getSelectedPaymentMethodForProvider(provider: any): string {
-  if (!provider || provider.type === 'heleket') return ''
+  if (!provider || provider.type === 'heleket' || provider.type === 'recharge_card') return ''
   if (!provider.methods || provider.methods.length === 0) return ''
   return selectedPaymentMethod.value || provider.methods[0]
 }
@@ -906,6 +1080,12 @@ function formatAmount() {
     rechargeAmount.value = Math.round(rechargeAmount.value * 100) / 100
   }
 }
+
+function formatTransferAmount() {
+  if (transferAmount.value) {
+    transferAmount.value = Math.round(transferAmount.value * 100) / 100
+  }
+}
 </script>
 
 <template>
@@ -962,6 +1142,16 @@ function formatAmount() {
                 {{ configStore.freeSiteMode ? freeSiteCopy.walletDescription : $t('wallet.description') }}
               </p>
               <div v-if="!configStore.freeSiteMode" class="mt-7 flex flex-wrap gap-3 lg:hidden">
+                <button
+                  v-if="balanceTransferAvailable"
+                  class="btn btn-ghost btn-lg"
+                  @click="openBalanceTransferModal"
+                >
+                  <svg class="mr-2 h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h11m0 0l-4-4m4 4l-4 4M17 17H6m0 0l4 4m-4-4l4-4" />
+                  </svg>
+                  {{ $t('wallet.balanceTransfer') }}
+                </button>
                 <button class="btn btn-primary btn-lg" @click="openRechargeModal">
                   <svg class="mr-2 h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
@@ -971,7 +1161,17 @@ function formatAmount() {
               </div>
             </div>
 
-            <div v-if="!configStore.freeSiteMode" class="hidden lg:flex lg:flex-shrink-0 lg:justify-end">
+            <div v-if="!configStore.freeSiteMode" class="hidden lg:flex lg:flex-shrink-0 lg:justify-end lg:gap-3">
+              <button
+                v-if="balanceTransferAvailable"
+                class="btn btn-ghost btn-lg"
+                @click="openBalanceTransferModal"
+              >
+                <svg class="mr-2 h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h11m0 0l-4-4m4 4l-4 4M17 17H6m0 0l4 4m-4-4l4-4" />
+                </svg>
+                {{ $t('wallet.balanceTransfer') }}
+              </button>
               <button class="btn btn-primary btn-lg" @click="openRechargeModal">
                 <svg class="mr-2 h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
@@ -1397,13 +1597,8 @@ function formatAmount() {
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
             </svg>
           </div>
-          <h3 class="text-xl font-semibold text-themed">{{ $t('aff.notActivated') }}</h3>
-          <p class="mx-auto mt-3 max-w-2xl text-sm leading-6 text-themed-muted">{{ $t('aff.activateHint') }}</p>
-          <div class="mt-6 flex justify-center">
-            <button class="btn btn-primary" @click="switchTab('balance'); openRechargeModal()">
-              {{ $t('aff.goRecharge') }}
-            </button>
-          </div>
+          <h3 class="text-xl font-semibold text-themed">{{ $t('aff.affDisabledByAdmin') }}</h3>
+          <p class="mx-auto mt-3 max-w-2xl text-sm leading-6 text-themed-muted">{{ $t('aff.affDisabledByAdminHint') }}</p>
         </div>
       </div>
 
@@ -1829,7 +2024,7 @@ function formatAmount() {
             </div>
 
             <!-- 支付方式选择 (仅当所选渠道支持多种方式时显示) -->
-            <div v-if="selectedProviderInfo && selectedProviderInfo.type !== 'heleket' && selectedProviderInfo.methods && selectedProviderInfo.methods.length > 1">
+            <div v-if="selectedProviderInfo && !isRechargeCardProvider && selectedProviderInfo.type !== 'heleket' && selectedProviderInfo.methods && selectedProviderInfo.methods.length > 1">
               <label class="label text-xs uppercase tracking-wide text-themed-muted mb-2">{{ $t('wallet.paymentMethodType') }}</label>
               <div class="grid grid-cols-2 gap-3">
                 <button
@@ -1868,8 +2063,32 @@ function formatAmount() {
               {{ $t('wallet.heleketSelectionHint') }}
             </div>
 
+            <div v-else-if="isRechargeCardProvider" class="space-y-3">
+              <div>
+                <label class="label text-xs uppercase tracking-wide text-themed-muted mb-2">{{ $t('wallet.rechargeCardNo') }}</label>
+                <input
+                  v-model.trim="rechargeCardNo"
+                  type="text"
+                  class="input w-full font-mono"
+                  autocomplete="off"
+                  :placeholder="$t('wallet.rechargeCardNoPlaceholder')"
+                />
+              </div>
+              <div>
+                <label class="label text-xs uppercase tracking-wide text-themed-muted mb-2">{{ $t('wallet.rechargeCardPassword') }}</label>
+                <input
+                  v-model.trim="rechargeCardPassword"
+                  type="password"
+                  class="input w-full font-mono"
+                  autocomplete="one-time-code"
+                  :placeholder="$t('wallet.rechargeCardPasswordPlaceholder')"
+                  @keyup.enter="createRechargeOrder"
+                />
+              </div>
+            </div>
+
             <!-- 充值金额 -->
-            <div>
+            <div v-if="!isRechargeCardProvider">
               <label class="label text-xs uppercase tracking-wide text-themed-muted mb-2">{{ $t('wallet.amountLabel') }}</label>
               <div class="grid grid-cols-4 gap-2 mb-3">
                 <button
@@ -1909,7 +2128,7 @@ function formatAmount() {
 
             <!-- 费用预览 -->
             <div
-              v-if="selectedProviderInfo && selectedRechargeFee > 0"
+              v-if="selectedProviderInfo && !isRechargeCardProvider && selectedRechargeFee > 0"
               class="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-sm"
             >
               <div class="flex items-start gap-2 text-amber-600 dark:text-amber-400">
@@ -1934,7 +2153,7 @@ function formatAmount() {
             </div>
 
             <!-- 确认复选框组 -->
-            <div class="space-y-2">
+            <div v-if="!isRechargeCardProvider" class="space-y-2">
               <!-- 无退款确认 -->
               <label for="agree-no-refund" class="flex items-start gap-2 cursor-pointer">
                 <input
@@ -1987,7 +2206,7 @@ function formatAmount() {
             <button class="btn btn-ghost" @click="showRechargeModal = false">{{ $t('common.cancel') }}</button>
             <button
               class="btn btn-primary min-w-[120px]"
-              :disabled="rechargeLoading || !selectedProvider || rechargeAmount <= 0 || !agreedToNoRefund || !agreedToRechargeNotice || !agreedToTerms"
+              :disabled="rechargeSubmitDisabled"
               @click="createRechargeOrder"
             >
               <svg v-if="!rechargeLoading" class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1997,7 +2216,148 @@ function formatAmount() {
                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
               </svg>
-              {{ rechargeLoading ? $t('common.processing') : $t('wallet.pay') }}
+              {{ rechargeLoading ? $t('common.processing') : (isRechargeCardProvider ? $t('wallet.redeemCard') : $t('wallet.pay')) }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- 余额转账弹窗 -->
+    <Teleport to="body">
+      <div v-if="showBalanceTransferModal && balanceTransferAvailable" class="modal-overlay" @click.self="showBalanceTransferModal = false">
+        <div class="modal-content max-w-md">
+          <div class="modal-header border-b-0 pb-2">
+            <div class="flex items-center gap-3">
+              <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-gray-900 dark:bg-white">
+                <svg class="h-5 w-5 text-white dark:text-gray-900" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h11m0 0l-4-4m4 4l-4 4M17 17H6m0 0l4 4m-4-4l4-4" />
+                </svg>
+              </div>
+              <div>
+                <h3 class="modal-title text-lg">{{ $t('wallet.balanceTransferTitle') }}</h3>
+                <p class="text-xs text-themed-muted">{{ $t('wallet.balanceTransferSubtitle') }}</p>
+              </div>
+            </div>
+            <button class="btn btn-ghost btn-sm rounded-full" @click="showBalanceTransferModal = false">
+              <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          <div class="modal-body space-y-5 pt-4">
+            <div>
+              <label class="label mb-2 text-xs uppercase tracking-wide text-themed-muted">{{ $t('wallet.balanceTransferUsername') }}</label>
+              <div class="flex gap-2">
+                <input
+                  v-model.trim="transferRecipientUsername"
+                  type="text"
+                  class="input min-w-0 flex-1"
+                  autocomplete="off"
+                  :placeholder="$t('wallet.balanceTransferUsernamePlaceholder')"
+                  @input="resetBalanceTransferRecipient"
+                  @keyup.enter="resolveBalanceTransferRecipient"
+                />
+                <button
+                  type="button"
+                  class="btn btn-ghost shrink-0"
+                  :disabled="recipientLookupLoading"
+                  @click="resolveBalanceTransferRecipient"
+                >
+                  {{ recipientLookupLoading ? $t('common.loading') : $t('wallet.balanceTransferResolve') }}
+                </button>
+              </div>
+            </div>
+
+            <div
+              v-if="transferRecipient"
+              class="rounded-xl border border-emerald-200/80 bg-emerald-50/70 p-4 dark:border-emerald-500/20 dark:bg-emerald-500/[0.08]"
+            >
+              <div class="text-xs font-medium uppercase tracking-wide text-emerald-700 dark:text-emerald-200">
+                {{ $t('wallet.balanceTransferRecipientConfirmed') }}
+              </div>
+              <div class="mt-2 flex items-center justify-between gap-3">
+                <div class="min-w-0">
+                  <div class="truncate text-base font-semibold text-zinc-950 dark:text-zinc-50">
+                    {{ transferRecipient.username }}
+                  </div>
+                  <div class="mt-1 text-xs text-themed-muted">ID: {{ transferRecipient.id }}</div>
+                </div>
+                <span :class="['inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium', getTagClass('emerald')]">
+                  {{ $t('common.success') }}
+                </span>
+              </div>
+            </div>
+
+            <div>
+              <label class="label mb-2 text-xs uppercase tracking-wide text-themed-muted">{{ $t('wallet.balanceTransferAmount') }}</label>
+              <div class="relative">
+                <span class="absolute left-3 top-1/2 -translate-y-1/2 font-medium text-themed-muted">¥</span>
+                <input
+                  v-model.number="transferAmount"
+                  type="number"
+                  class="input w-full pl-8 text-lg font-semibold"
+                  min="0.01"
+                  step="0.01"
+                  placeholder="0.00"
+                  :disabled="!transferRecipient"
+                  @input="resetBalanceTransferPreview"
+                  @blur="formatTransferAmount"
+                  @keyup.enter="previewBalanceTransfer"
+                />
+              </div>
+            </div>
+
+            <div
+              v-if="transferPreview"
+              class="rounded-xl border border-themed bg-themed-secondary/60 p-4"
+            >
+              <div class="mb-3 text-sm font-semibold text-themed">{{ $t('wallet.balanceTransferPreview') }}</div>
+              <div class="space-y-2 text-sm">
+                <div class="flex items-center justify-between gap-4">
+                  <span class="text-themed-muted">{{ $t('wallet.balanceTransferAmount') }}</span>
+                  <span class="font-medium text-themed">{{ formatMoney(transferPreview.amount) }}</span>
+                </div>
+                <div class="flex items-center justify-between gap-4">
+                  <span class="text-themed-muted">{{ $t('wallet.balanceTransferFee') }}</span>
+                  <span class="font-medium text-themed">{{ formatMoney(transferPreview.fee) }}</span>
+                </div>
+                <div class="flex items-center justify-between gap-4">
+                  <span class="text-themed-muted">{{ $t('wallet.balanceTransferTotalDeduction') }}</span>
+                  <span class="font-semibold text-themed">{{ formatMoney(transferPreview.totalDeduction) }}</span>
+                </div>
+                <div class="flex items-center justify-between gap-4">
+                  <span class="text-themed-muted">{{ $t('wallet.balanceTransferCurrentBalance') }}</span>
+                  <span class="font-medium text-themed">{{ formatMoney(transferPreview.currentBalance) }}</span>
+                </div>
+                <div class="flex items-center justify-between gap-4">
+                  <span class="text-themed-muted">{{ $t('wallet.balanceTransferBalanceAfter') }}</span>
+                  <span class="font-semibold text-themed">{{ formatMoney(transferPreview.balanceAfter) }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="modal-footer border-t-0 pt-2">
+            <button class="btn btn-ghost" @click="showBalanceTransferModal = false">{{ $t('common.cancel') }}</button>
+            <button
+              class="btn btn-ghost"
+              :disabled="balanceTransferPreviewLoading || !transferRecipient || balanceTransferAmountInvalid"
+              @click="previewBalanceTransfer"
+            >
+              {{ balanceTransferPreviewLoading ? $t('common.processing') : $t('wallet.balanceTransferPreviewAction') }}
+            </button>
+            <button
+              class="btn btn-primary min-w-[120px]"
+              :disabled="balanceTransferSubmitDisabled"
+              @click="submitBalanceTransfer"
+            >
+              <svg v-if="balanceTransferLoading" class="mr-1.5 h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              {{ balanceTransferLoading ? $t('common.processing') : $t('wallet.balanceTransferSubmit') }}
             </button>
           </div>
         </div>

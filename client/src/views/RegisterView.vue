@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
 import { validateIdentifier, containsDangerousChars } from '@/utils/validation'
 import { translateError } from '@/utils/errorHandler'
+import { shouldRequireTurnstileForSendCode, shouldShowRegisterTurnstileWidget } from '@/utils/registerTurnstile'
 import TurnstileWidget from '@/components/TurnstileWidget.vue'
 import TermsOfServiceModal from '@/components/TermsOfServiceModal.vue'
 import api from '@/api'
@@ -48,14 +49,19 @@ const emailVerificationEnabled = ref<boolean>(false)
 const sendingCode = ref<boolean>(false)
 const codeSent = ref<boolean>(false)
 const codeCountdown = ref<number>(0)
+const showResendTurnstile = ref<boolean>(false)
 let countdownTimer: ReturnType<typeof setInterval> | null = null
 
-// 组件卸载时清理定时器
-onUnmounted(() => {
+function clearCountdownTimer(): void {
   if (countdownTimer) {
     clearInterval(countdownTimer)
     countdownTimer = null
   }
+}
+
+// 组件卸载时清理定时器
+onUnmounted(() => {
+  clearCountdownTimer()
 })
 
 // Email domain whitelist
@@ -75,12 +81,37 @@ watch([emailUsername, selectedEmailDomain], () => {
   }
 })
 
+watch(() => form.value.email, () => {
+  if (!codeSent.value && !form.value.emailCode) return
+
+  codeSent.value = false
+  codeCountdown.value = 0
+  form.value.emailCode = ''
+  showResendTurnstile.value = false
+  clearCountdownTimer()
+})
+
 // Turnstile
 const turnstileEnabled = ref<boolean>(false)
 const turnstileSiteKey = ref<string>('')
 const turnstileToken = ref<string>('')
 const turnstileRef = ref<InstanceType<typeof TurnstileWidget> | null>(null)
 void turnstileRef.value // 模板中通过 ref 使用
+const sendCodeRequiresTurnstile = computed(() => turnstileEnabled.value && emailVerificationEnabled.value)
+const registerRequiresTurnstile = computed(() => turnstileEnabled.value && !emailVerificationEnabled.value)
+const showTurnstileWidget = computed(() => shouldShowRegisterTurnstileWidget({
+  turnstileEnabled: turnstileEnabled.value,
+  hasSiteKey: !!turnstileSiteKey.value,
+  emailVerificationEnabled: emailVerificationEnabled.value,
+  codeSent: codeSent.value,
+  resendTurnstileRequested: showResendTurnstile.value
+}))
+const sendCodeButtonRequiresTurnstile = computed(() => shouldRequireTurnstileForSendCode({
+  turnstileEnabled: turnstileEnabled.value,
+  emailVerificationEnabled: emailVerificationEnabled.value,
+  codeSent: codeSent.value,
+  resendTurnstileRequested: showResendTurnstile.value
+}))
 
 // Terms of Service
 const agreedToTerms = ref<boolean>(false)
@@ -113,7 +144,8 @@ function handleSendCodeClick(): void {
   }
 
   // Check Turnstile if enabled
-  if (turnstileEnabled.value && !turnstileToken.value) {
+  if (sendCodeRequiresTurnstile.value && !turnstileToken.value) {
+    showResendTurnstile.value = true
     error.value = t('auth.turnstileRequired')
     return
   }
@@ -164,17 +196,17 @@ async function sendVerificationCode(): Promise<void> {
   try {
     await api.auth.sendVerificationCode(
       form.value.email,
-      turnstileEnabled.value ? turnstileToken.value : undefined
+      sendCodeRequiresTurnstile.value ? turnstileToken.value : undefined
     )
     codeSent.value = true
+    showResendTurnstile.value = false
     // Start countdown
     codeCountdown.value = 60
     countdownTimer = setInterval(() => {
       codeCountdown.value--
       if (codeCountdown.value <= 0) {
         if (countdownTimer) {
-          clearInterval(countdownTimer)
-          countdownTimer = null
+          clearCountdownTimer()
         }
       }
     }, 1000)
@@ -185,6 +217,7 @@ async function sendVerificationCode(): Promise<void> {
     turnstileToken.value = ''
   } catch (err: any) {
     error.value = translateError(err)
+    showResendTurnstile.value = sendCodeRequiresTurnstile.value
     // Reset turnstile if failed
     if (turnstileRef.value) {
       turnstileRef.value.reset?.()
@@ -265,7 +298,7 @@ async function handleRegister(): Promise<void> {
   }
 
   // 检查 Turnstile 验证
-  if (turnstileEnabled.value && !turnstileToken.value) {
+  if (registerRequiresTurnstile.value && !turnstileToken.value) {
     error.value = t('auth.turnstileRequired')
     return
   }
@@ -285,15 +318,12 @@ async function handleRegister(): Promise<void> {
       email: form.value.email,
       password: form.value.password,
       inviteCode: form.value.inviteCode,
-      turnstileToken: turnstileEnabled.value ? turnstileToken.value : undefined,
+      turnstileToken: registerRequiresTurnstile.value ? turnstileToken.value : undefined,
       emailCode: emailVerificationEnabled.value ? form.value.emailCode : undefined
     })
     success.value = true
     // Clean up countdown timer
-    if (countdownTimer) {
-      clearInterval(countdownTimer)
-      countdownTimer = null
-    }
+    clearCountdownTimer()
     // 注册成功后自动登录并跳转到后台
     // 管理员跳转到用户管理页面，普通用户跳转到 dashboard
     // 优化：减少延迟时间从 1.5 秒到 0.5 秒
@@ -430,8 +460,8 @@ async function handleRegister(): Promise<void> {
               <button
                 type="button"
                 class="btn-secondary whitespace-nowrap px-4"
-                :disabled="sendingCode || codeCountdown > 0 || !form.email || (turnstileEnabled && !turnstileToken)"
-                :title="!form.email ? $t('auth.enterEmailFirst') : (turnstileEnabled && !turnstileToken) ? $t('auth.turnstileRequired') : ''"
+                :disabled="sendingCode || codeCountdown > 0 || !form.email || (sendCodeButtonRequiresTurnstile && !turnstileToken)"
+                :title="!form.email ? $t('auth.enterEmailFirst') : (sendCodeButtonRequiresTurnstile && !turnstileToken) ? $t('auth.turnstileRequired') : ''"
                 @click="handleSendCodeClick"
               >
                 <template v-if="sendingCode">
@@ -476,7 +506,7 @@ async function handleRegister(): Promise<void> {
 
           <!-- Turnstile 验证 -->
           <TurnstileWidget
-            v-if="turnstileEnabled && turnstileSiteKey"
+            v-if="showTurnstileWidget"
             ref="turnstileRef"
             v-model="turnstileToken"
             :site-key="turnstileSiteKey"

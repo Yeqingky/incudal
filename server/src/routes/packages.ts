@@ -119,6 +119,31 @@ function serializePackagePlan(plan: any, pkg: { instance_type?: string | null })
   }
 }
 
+async function batchGetSerializedPlans(
+  packageIds: number[],
+  instanceTypeMap: Map<number, string | null | undefined>
+): Promise<Map<number, PackagePlanResponse[]>> {
+  const validIds = Array.from(new Set(packageIds.filter(id => Number.isInteger(id) && id > 0)))
+  if (validIds.length === 0) return new Map()
+
+  const plans = await prisma.packagePlan.findMany({
+    where: { packageId: { in: validIds }, isActive: true },
+    orderBy: { sortOrder: 'asc' }
+  })
+
+  const result = new Map<number, PackagePlanResponse[]>()
+  for (const plan of plans) {
+    const instanceType = instanceTypeMap.get(plan.packageId)
+    const serialized = serializePackagePlan(plan, { instance_type: instanceType })
+    if (!result.has(plan.packageId)) {
+      result.set(plan.packageId, [])
+    }
+    result.get(plan.packageId)!.push(serialized)
+  }
+
+  return result
+}
+
 function getNumberRange(values: number[]): { min: number | null; max: number | null } {
   if (values.length === 0) return { min: null, max: null }
   return {
@@ -379,13 +404,16 @@ export default async function packageRoutes(fastify: FastifyInstance) {
       orderBy: { name: 'asc' }
     })
     
-    // 查询每个套餐是否有定价方案，并计算售罄状态
-    const packagesWithDetails = await Promise.all(packages.map(async (pkg) => {
-      // 获取套餐的定价方案
-      const plans = await prisma.packagePlan.findMany({
-        where: { packageId: pkg.id, isActive: true },
+    // 批量查询所有套餐的定价方案和宿主机（消除 N+1）
+    const allPackageIds = packages.map(pkg => pkg.id)
+    const allHostIds = [...new Set(packages.flatMap(pkg => pkg.packageHosts.map(ph => ph.hostId)))]
+
+    const [allPlans, allHosts] = await Promise.all([
+      prisma.packagePlan.findMany({
+        where: { packageId: { in: allPackageIds }, isActive: true },
         select: {
           id: true,
+          packageId: true,
           name: true,
           description: true,
           cpu: true,
@@ -406,20 +434,36 @@ export default async function packageRoutes(fastify: FastifyInstance) {
           sortOrder: true
         },
         orderBy: { sortOrder: 'asc' }
-      })
-      
+      }),
+      allHostIds.length > 0
+        ? prisma.host.findMany({
+            where: { id: { in: allHostIds }, status: 'online' },
+            select: { id: true, cpuAllowanceMax: true, memoryMax: true, cpuUsed: true, memoryUsed: true }
+          })
+        : Promise.resolve([])
+    ])
+
+    // 按 packageId 分组 plans，按 id 索引 hosts
+    const plansByPackage = new Map<number, typeof allPlans>()
+    for (const plan of allPlans) {
+      if (!plansByPackage.has(plan.packageId)) {
+        plansByPackage.set(plan.packageId, [])
+      }
+      plansByPackage.get(plan.packageId)!.push(plan)
+    }
+    const hostsById = new Map(allHosts.map(h => [h.id, h]))
+
+    // 同步映射（不再有 async/await）
+    const packagesWithDetails = packages.map((pkg) => {
+      const plans = plansByPackage.get(pkg.id) || []
       const isPaid = plans.length > 0
       const availablePlans = plans.filter(plan => !plan.isSoldOut)
       const hostIds = pkg.packageHosts.map(ph => ph.hostId)
-      
+      const hosts = hostIds.map(id => hostsById.get(id)).filter(Boolean) as typeof allHosts
+
       // 检查是否售罄（所有绑定的宿主机资源不足）
       let soldOut = isPaid && availablePlans.length === 0
       if (hostIds.length > 0) {
-        const hosts = await prisma.host.findMany({
-          where: { id: { in: hostIds }, status: 'online' },
-          select: { id: true, cpuAllowanceMax: true, memoryMax: true, cpuUsed: true, memoryUsed: true }
-        })
-        
         // 如果没有在线的宿主机，则售罄
         if (hosts.length === 0) {
           soldOut = true
@@ -427,23 +471,23 @@ export default async function packageRoutes(fastify: FastifyInstance) {
           // 检查是否所有宿主机资源都不足
           const minCpu = isPaid ? Math.min(...availablePlans.map(plan => plan.cpu)) : 15
           const minMemory = isPaid ? Math.min(...availablePlans.map(plan => plan.memory)) : 128
-          
+
           const hasAvailable = hosts.some(h => {
             const cpuAvailable = (h.cpuAllowanceMax || 0) - (h.cpuUsed || 0) >= minCpu
             const memoryAvailable = (h.memoryMax || 0) - (h.memoryUsed || 0) >= minMemory
             return cpuAvailable && memoryAvailable
           })
-          
+
           soldOut = !hasAvailable
         }
       } else {
         // 没有绑定宿主机，视为售罄
         soldOut = true
       }
-      
+
       // 判断是否为托管市场套餐
       const sourceType = pkg.user.role === 'admin' ? 'official' : 'market'
-      
+
       return {
         id: pkg.id,
         name: pkg.name,
@@ -486,7 +530,7 @@ export default async function packageRoutes(fastify: FastifyInstance) {
           monthlyPrice: Number(p.price) / (p.billingCycle || 1)
         }))
       }
-    }))
+    })
     
     // 售罄的套餐排在最后
     packagesWithDetails.sort((a, b) => {
@@ -716,8 +760,8 @@ export default async function packageRoutes(fastify: FastifyInstance) {
         }
       }
     }
-    // 用于转换共享套餐为响应格式的辅助函数
-    const formatSharedPackage = async (p: any, isGlobalShared: boolean, sourceType: 'official' | 'market' | 'friends' | 'zone', zone?: packageShares.HostingZoneInfo) => ({
+    // 用于转换共享套餐为响应格式的辅助函数（同步，使用预计算的 requiredPackageInstanceMap）
+    const formatSharedPackage = (p: any, isGlobalShared: boolean, sourceType: 'official' | 'market' | 'friends' | 'zone', requiredPackageInstanceMap: Map<number, boolean>, zone?: packageShares.HostingZoneInfo) => ({
       id: p.id,
       name: p.name,
       description: p.description,
@@ -763,7 +807,7 @@ export default async function packageRoutes(fastify: FastifyInstance) {
       // 新增：套餐来源类型
       sourceType,
       has_required_package_instance: p.requiredPackageId
-        ? await db.userHasNormalInstanceForPackage(user.id, p.requiredPackageId)
+        ? (requiredPackageInstanceMap.get(p.requiredPackageId) ?? false)
         : true,
       ...(zone ? {
         hostingZoneId: zone.id,
@@ -777,12 +821,17 @@ export default async function packageRoutes(fastify: FastifyInstance) {
       // 面板直营：仅返回管理员创建的全局共享套餐
       const globalPackages = await packageShares.getGlobalSharedPackages()
       const officialIds = globalPackages.map(p => p.id)
-      const officialSoldOutMap = await db.checkPackagesSoldOut(officialIds)
+      const [officialSoldOutMap, officialRequiredMap, officialPlansMap] = await Promise.all([
+        db.checkPackagesSoldOut(officialIds),
+        db.userHasNormalInstanceForPackages(user.id, globalPackages.map(p => p.requiredPackageId).filter((id): id is number => id != null && id > 0)),
+        batchGetSerializedPlans(officialIds, new Map(globalPackages.map(p => [p.id, p.instanceType])))
+      ])
       return {
-        packages: await Promise.all(globalPackages.map(async p => ({
-          ...await formatSharedPackage(p, true, 'official'),
-          soldOut: officialSoldOutMap.get(p.id) ?? false
-        }))),
+        packages: globalPackages.map(p => ({
+          ...formatSharedPackage(p, true, 'official', officialRequiredMap),
+          soldOut: officialSoldOutMap.get(p.id) ?? false,
+          plans: officialPlansMap.get(p.id) || []
+        })),
         total: globalPackages.length
       }
     }
@@ -794,12 +843,17 @@ export default async function packageRoutes(fastify: FastifyInstance) {
         excludeOwnerIds: zoneOwnerIds
       })
       const marketIds = marketPackages.map(p => p.id)
-      const marketSoldOutMap = await db.checkPackagesSoldOut(marketIds)
+      const [marketSoldOutMap, marketRequiredMap, marketPlansMap] = await Promise.all([
+        db.checkPackagesSoldOut(marketIds),
+        db.userHasNormalInstanceForPackages(user.id, marketPackages.map(p => p.requiredPackageId).filter((id): id is number => id != null && id > 0)),
+        batchGetSerializedPlans(marketIds, new Map(marketPackages.map(p => [p.id, p.instanceType])))
+      ])
       return {
-        packages: await Promise.all(marketPackages.map(async p => ({
-          ...await formatSharedPackage(p, true, 'market'),
-          soldOut: marketSoldOutMap.get(p.id) ?? false
-        }))),
+        packages: marketPackages.map(p => ({
+          ...formatSharedPackage(p, true, 'market', marketRequiredMap),
+          soldOut: marketSoldOutMap.get(p.id) ?? false,
+          plans: marketPlansMap.get(p.id) || []
+        })),
         total: marketPackages.length
       }
     }
@@ -819,13 +873,18 @@ export default async function packageRoutes(fastify: FastifyInstance) {
         ownerId: zone.ownerId
       })
       const zonePackageIds = zonePackages.map(p => p.id)
-      const zoneSoldOutMap = await db.checkPackagesSoldOut(zonePackageIds)
+      const [zoneSoldOutMap, zoneRequiredMap, zonePlansMap] = await Promise.all([
+        db.checkPackagesSoldOut(zonePackageIds),
+        db.userHasNormalInstanceForPackages(user.id, zonePackages.map(p => p.requiredPackageId).filter((id): id is number => id != null && id > 0)),
+        batchGetSerializedPlans(zonePackageIds, new Map(zonePackages.map(p => [p.id, p.instanceType])))
+      ])
 
       return {
-        packages: await Promise.all(zonePackages.map(async p => ({
-          ...await formatSharedPackage(p, true, 'zone', zone),
-          soldOut: zoneSoldOutMap.get(p.id) ?? false
-        }))),
+        packages: zonePackages.map(p => ({
+          ...formatSharedPackage(p, true, 'zone', zoneRequiredMap, zone),
+          soldOut: zoneSoldOutMap.get(p.id) ?? false,
+          plans: zonePlansMap.get(p.id) || []
+        })),
         total: zonePackages.length
       }
     }
@@ -834,45 +893,56 @@ export default async function packageRoutes(fastify: FastifyInstance) {
       // 好友共享：仅返回好友共享的套餐
       const friendPackages = await packageShares.getSharedToUser(user.id)
       const friendIds = friendPackages.map(p => p.id)
-      const friendSoldOutMap = await db.checkPackagesSoldOut(friendIds)
+      const [friendSoldOutMap, friendRequiredMap, friendPlansMap] = await Promise.all([
+        db.checkPackagesSoldOut(friendIds),
+        db.userHasNormalInstanceForPackages(user.id, friendPackages.map(p => p.requiredPackageId).filter((id): id is number => id != null && id > 0)),
+        batchGetSerializedPlans(friendIds, new Map(friendPackages.map(p => [p.id, p.instanceType])))
+      ])
       return {
-        packages: await Promise.all(friendPackages.map(async p => ({
-          ...await formatSharedPackage(p, false, 'friends'),
-          soldOut: friendSoldOutMap.get(p.id) ?? false
-        }))),
+        packages: friendPackages.map(p => ({
+          ...formatSharedPackage(p, false, 'friends', friendRequiredMap),
+          soldOut: friendSoldOutMap.get(p.id) ?? false,
+          plans: friendPlansMap.get(p.id) || []
+        })),
         total: friendPackages.length
       }
     }
 
     // source=all 或不传：返回全部（保持向后兼容）
-    // 获取套餐：管理员查看系统所有套餐，普通用户查看自己的套餐
-    const ownPackages = await db.getAllPackages(activeOnly, {
-      userId: isAdmin ? undefined : user.id
-    })
+    // 批次 1：4 个无依赖查询并行
+    const [ownPackages, sharedPackages, globalPackages, hostingZones] = await Promise.all([
+      db.getAllPackages(activeOnly, { userId: isAdmin ? undefined : user.id }),
+      packageShares.getSharedToUser(user.id),
+      packageShares.getGlobalSharedPackages(),
+      packageShares.getHostingZonesForViewer(user.id)
+    ])
+
     const ownPackageIds = ownPackages.map(p => p.id)
-    const ownInstanceCountMap = await db.getNormalInstanceCountsByPackages(ownPackageIds)
-
-    // 获取共享给用户的套餐（好友共享）
-    const sharedPackages = await packageShares.getSharedToUser(user.id)
-
-    // 获取全局共享的套餐（官方）
-    const globalPackages = await packageShares.getGlobalSharedPackages()
-
-    // 获取托管市场套餐
-    const hostingZones = await packageShares.getHostingZonesForViewer(user.id)
     const zoneOwnerIds = hostingZones.map(zone => zone.ownerId)
-    const marketPackages = await packageShares.getHostedMarketPackages(user.id, {
-      excludeOwnerIds: zoneOwnerIds
-    })
 
-    const zonePackagesByZone = await Promise.all(
-      hostingZones.map(async zone => ({
+    // 批次 2：3 个依赖批次 1 结果的查询并行
+    const [ownInstanceCountMap, marketPackages, zonePackagesByZone] = await Promise.all([
+      db.getNormalInstanceCountsByPackages(ownPackageIds),
+      packageShares.getHostedMarketPackages(user.id, { excludeOwnerIds: zoneOwnerIds }),
+      Promise.all(hostingZones.map(async zone => ({
         zone,
-        packages: await packageShares.getHostedMarketPackages(user.id, {
-          ownerId: zone.ownerId
-        })
-      }))
-    )
+        packages: await packageShares.getHostedMarketPackages(user.id, { ownerId: zone.ownerId })
+      })))
+    ])
+
+    // 批量预计算所有套餐的 requiredPackageInstance 映射（消除 N+1）
+    const allRequiredPackageIds = Array.from(new Set(
+      [
+        ...ownPackages.map(p => (p as any).required_package_id),
+        ...sharedPackages.map(p => p.requiredPackageId),
+        ...globalPackages.map(p => p.requiredPackageId),
+        ...marketPackages.map(p => p.requiredPackageId),
+        ...zonePackagesByZone.flatMap(g => g.packages.map(p => p.requiredPackageId))
+      ].filter((id): id is number => id != null && id > 0)
+    ))
+    const requiredPackageInstanceMap = allRequiredPackageIds.length > 0
+      ? await db.userHasNormalInstanceForPackages(user.id, allRequiredPackageIds)
+      : new Map<number, boolean>()
 
     // 合并并去重，优先级：自己的 > 好友分享 > 托管专区 > 托管市场 > 官方直营
     // 使用 Set 记录已添加的套餐 ID，避免重复
@@ -926,7 +996,7 @@ export default async function packageRoutes(fastify: FastifyInstance) {
         required_package_id: (p as any).required_package_id ?? null,
         required_package_name: (p as any).required_package_name ?? null,
         has_required_package_instance: (p as any).required_package_id
-          ? await db.userHasNormalInstanceForPackage(user.id, (p as any).required_package_id)
+          ? (requiredPackageInstanceMap.get((p as any).required_package_id) ?? false)
           : true,
         // 所有者信息
         ownerId: p.user_id,
@@ -942,7 +1012,7 @@ export default async function packageRoutes(fastify: FastifyInstance) {
     for (const p of sharedPackages) {
       if (addedPackageIds.has(p.id)) continue
       addedPackageIds.add(p.id)
-      allPackages.push(await formatSharedPackage(p, false, 'friends'))
+      allPackages.push(formatSharedPackage(p, false, 'friends', requiredPackageInstanceMap))
     }
 
     // 3. 添加托管专区套餐（跳过已有的）
@@ -950,7 +1020,7 @@ export default async function packageRoutes(fastify: FastifyInstance) {
       for (const p of group.packages) {
         if (addedPackageIds.has(p.id)) continue
         addedPackageIds.add(p.id)
-        allPackages.push(await formatSharedPackage(p, true, 'zone', group.zone))
+        allPackages.push(formatSharedPackage(p, true, 'zone', requiredPackageInstanceMap, group.zone))
       }
     }
 
@@ -958,29 +1028,36 @@ export default async function packageRoutes(fastify: FastifyInstance) {
     for (const p of marketPackages) {
       if (addedPackageIds.has(p.id)) continue
       addedPackageIds.add(p.id)
-      allPackages.push(await formatSharedPackage(p, true, 'market'))
+      allPackages.push(formatSharedPackage(p, true, 'market', requiredPackageInstanceMap))
     }
 
     // 5. 添加官方直营套餐（跳过已有的）
     for (const p of globalPackages) {
       if (addedPackageIds.has(p.id)) continue
       addedPackageIds.add(p.id)
-      allPackages.push(await formatSharedPackage(p, true, 'official'))
+      allPackages.push(formatSharedPackage(p, true, 'official', requiredPackageInstanceMap))
     }
 
-    // 6. 批量计算售罄状态
+    // 6. 批量计算售罄状态 + 批量查询 plans
     const packageIds = allPackages.map(p => p.id)
-    const soldOutMap = await db.checkPackagesSoldOut(packageIds)
+    const instanceTypeMap = new Map<number, string | null | undefined>(
+      allPackages.map(p => [p.id, p.instance_type])
+    )
+    const [soldOutMap, plansByPackage] = await Promise.all([
+      db.checkPackagesSoldOut(packageIds),
+      batchGetSerializedPlans(packageIds, instanceTypeMap)
+    ])
 
-    // 7. 添加 soldOut 字段到每个套餐
-    const packagesWithSoldOut = allPackages.map(p => ({
+    // 7. 添加 soldOut 和 plans 字段到每个套餐
+    const packagesWithDetails = allPackages.map(p => ({
       ...p,
-      soldOut: soldOutMap.get(p.id) ?? false
+      soldOut: soldOutMap.get(p.id) ?? false,
+      plans: plansByPackage.get(p.id) || []
     }))
 
     return {
-      packages: packagesWithSoldOut,
-      total: packagesWithSoldOut.length
+      packages: packagesWithDetails,
+      total: packagesWithDetails.length
     }
   })
 

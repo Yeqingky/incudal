@@ -4,6 +4,7 @@
 
 import type { FastifyRequest, FastifyReply } from 'fastify'
 import { getSystemConfig, getSystemConfigBoolean } from '../db/system-config.js'
+import { getStrictTurnstilePrecheck } from './turnstile-precheck.js'
 
 interface TurnstileVerifyResponse {
     success: boolean
@@ -128,7 +129,39 @@ export function createTurnstileVerifier(required: boolean = true) {
     }
 }
 
+export function createStrictTurnstileVerifier() {
+    return async function verifyStrictTurnstile(
+        request: FastifyRequest,
+        reply: FastifyReply
+    ): Promise<void> {
+        const config = await getTurnstileConfig()
+
+        const token = (request.body as { turnstileToken?: string })?.turnstileToken
+            || (request.query as { turnstileToken?: string })?.turnstileToken
+            || request.headers['x-turnstile-token'] as string
+
+        const precheck = getStrictTurnstilePrecheck(config, token)
+        if (!precheck.ok) {
+            return reply.code(precheck.statusCode).send(precheck.payload)
+        }
+        if (precheck.skip) {
+            return
+        }
+
+        const result = await verifyTurnstileToken(precheck.token, precheck.secretKey, request.ip)
+
+        if (!result.success) {
+            return reply.code(403).send({
+                error: 'Turnstile verification failed',
+                code: 'TURNSTILE_VERIFICATION_FAILED',
+                details: result.error
+            })
+        }
+    }
+}
+
 /**
  * 预定义的验证器实例
  */
 export const turnstileVerifier = createTurnstileVerifier(true)
+export const strictTurnstileVerifier = createStrictTurnstileVerifier()

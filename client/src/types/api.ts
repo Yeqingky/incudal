@@ -510,6 +510,26 @@ export interface Instance {
   updated_at: string
 }
 
+/**
+ * Dashboard 统计摘要（轻量接口返回）
+ * 替代 pageSize:1000 全量拉取，仅返回统计计数和最近 5 条实例
+ */
+export interface DashboardSummary {
+  stats: {
+    total: number
+    running: number
+    stopped: number
+    creating: number
+    error: number
+    suspended: number
+  }
+  instanceTypeStats: {
+    vm: number
+    container: number
+  }
+  recentInstances: Instance[]
+}
+
 export interface InstanceWithDetails extends Omit<Instance, 'host'> {
   user?: Pick<User, 'id' | 'username' | 'email'>
   // 实例详情页面的宿主机信息（比列表更详细）
@@ -1027,6 +1047,8 @@ export interface Package {
   // 实例操作权限
   allow_instance_deletion?: boolean  // 是否允许用户删除实例
   sharedAt?: string  // 共享时间（共享套餐）
+  // 套餐方案列表（列表响应中附带，避免前端额外请求）
+  plans?: PackagePlan[]
   // 剩余配额信息
   quotaInfo?: {
     maxInstances: number | null
